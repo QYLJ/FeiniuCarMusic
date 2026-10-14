@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="164dp"
+    android:background="@drawable/bg_collection_card"
+    android:orientation="vertical"
+    android:padding="8dp">
+
+    <com.feiniu.carmusic.ui.RoundedCoverView android:id="@+id/collection_cover" android:layout_width="match_parent" android:layout_height="112dp" android:background="@drawable/bg_cover_placeholder" android:contentDescription="分类封面" android:scaleType="centerCrop" />
+    <TextView android:id="@+id/collection_name" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="5dp" android:ellipsize="end" android:maxLines="1" android:textColor="@color/text_primary" android:textSize="14sp" android:textStyle="bold" />
+    <TextView android:id="@+id/collection_count" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:maxLines="1" android:textColor="@color/text_secondary" android:textSize="11sp" />
+</LinearLayout>

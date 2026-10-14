@@ -1,0 +1,8 @@
+{
+  "versionCode": 19,
+  "versionName": "0.3.12-auto-load",
+  "apkUrl": "FeiniuCarMusic-0.3.12-auto-load-19.apk",
+  "sha256": "将这里替换为64位APK-SHA256",
+  "minSdk": 14,
+  "changelog": "1. 歌单等歌曲列表每批 500 首，自动连续加载直到全部完成\n2. 播放时自动补齐后续歌曲，保留当前歌曲和进度\n3. 加载失败可点击状态重试，防止重复分页无限加载"
+}

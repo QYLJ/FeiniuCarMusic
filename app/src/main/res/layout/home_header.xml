@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingTop="4dp"
+    android:paddingBottom="8dp">
+
+    <LinearLayout
+        android:id="@+id/home_cards"
+        android:layout_width="match_parent"
+        android:layout_height="72dp"
+        android:orientation="horizontal">
+
+        <com.feiniu.carmusic.ui.HomeShortcutView android:id="@+id/home_roam" android:layout_width="0dp" android:layout_height="match_parent" android:layout_marginRight="4dp" android:layout_weight="1" android:background="@drawable/bg_card_roam" android:tag="roam" android:text="漫游\n发现下一首好歌" />
+        <com.feiniu.carmusic.ui.HomeShortcutView android:id="@+id/home_favorite" android:layout_width="0dp" android:layout_height="match_parent" android:layout_marginLeft="4dp" android:layout_marginRight="4dp" android:layout_weight="1" android:background="@drawable/bg_card_favorite" android:tag="favorite" android:text="收藏\n喜欢的都在这里" />
+        <com.feiniu.carmusic.ui.HomeShortcutView android:id="@+id/home_recent" android:layout_width="0dp" android:layout_height="match_parent" android:layout_marginLeft="4dp" android:layout_marginRight="4dp" android:layout_weight="1" android:background="@drawable/bg_card_recent" android:tag="recent" android:text="最近播放\n接着上次听" />
+        <com.feiniu.carmusic.ui.HomeShortcutView android:id="@+id/home_library" android:layout_width="0dp" android:layout_height="match_parent" android:layout_marginLeft="4dp" android:layout_weight="1" android:background="@drawable/bg_card_library" android:tag="library" android:text="音乐库\n你的私人音乐收藏" />
+    </LinearLayout>
+
+    <TextView android:id="@+id/home_section_title" android:layout_width="match_parent" android:layout_height="36dp" android:gravity="center_vertical" android:includeFontPadding="false" android:text="最近添加" android:textColor="@color/text_primary" android:textSize="16sp" android:textStyle="bold" />
+</LinearLayout>

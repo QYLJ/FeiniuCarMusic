@@ -1,0 +1,12 @@
+生成方式：内置 image_gen 工具。
+用途：飞牛车载音乐项目封面。
+
+完整提示词：
+Use case: ads-marketing
+Asset type: a finished landscape 16:9 cover image for the Chinese Android project “飞牛车载音乐”.
+Primary request: create a beautiful pencil hand-drawn cover, with an authentic graphite-on-paper look.
+Composition: confident editorial layout with generous breathing room. The Chinese title occupies the upper-left portion, with a small subtitle beneath. A carefully drawn car cockpit fills the center-right and lower half: recognizable steering wheel, dashboard and a wide central music screen; a quiet winding road and lightly sketched distant hills are visible through the windshield. Use a single flowing musical staff with a few notes to connect the music screen to the open road, elegantly and sparingly. Keep the important title and scene within generous crop-safe margins.
+Style/medium: real-looking graphite pencil sketch, fine construction lines, natural pressure variation, visible pencil grain, gentle cross-hatching, a few loose exploratory strokes and softly smudged shading. Refined and warm, like a talented illustrator's sketchbook cover. Warm ivory drawing paper with subtle tactile fibers. Predominantly graphite gray, with only one tiny muted raspberry-red accent on the music screen, inspired by the application's accent color.
+Text (verbatim): main title “飞牛车载音乐”; subtitle “连接你的私人音乐库”. The six title characters must be correct and clearly readable, large, dark, and visually like hand-lettered pencil Chinese lettering. Subtitle is restrained and smaller. No other text.
+The music screen shows a simple record/music-note symbol and a few minimal player shapes, rendered in pencil, without technical labels or exact app UI.
+Constraints: cohesive illustration and cover typography, not a photographed sheet or desk scene; the artwork fills the image edge-to-edge. No real people, no photorealistic car, no glossy 3D, no ink-pen or watercolor treatment, no saturated colorful background, no watermark, no unrelated logos, no account details or login form. High-quality finished cover, landscape 16:9.

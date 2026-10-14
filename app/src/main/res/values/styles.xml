@@ -1,0 +1,57 @@
+<resources>
+    <style name="AppTheme" parent="android:style/Theme.Holo.NoActionBar">
+        <item name="android:windowBackground">@color/background</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+
+    <style name="CarButton">
+        <item name="android:layout_height">48dp</item>
+        <item name="android:background">@drawable/bg_button</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:minWidth">72dp</item>
+        <item name="android:minHeight">0dp</item>
+        <item name="android:paddingLeft">16dp</item>
+        <item name="android:paddingRight">16dp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:includeFontPadding">false</item>
+    </style>
+
+    <style name="AccentButton" parent="CarButton">
+        <item name="android:background">@drawable/bg_accent_button</item>
+    </style>
+
+    <style name="CompactButton" parent="CarButton">
+        <item name="android:layout_height">36dp</item>
+        <item name="android:minWidth">48dp</item>
+        <item name="android:paddingLeft">8dp</item>
+        <item name="android:paddingRight">8dp</item>
+        <item name="android:textSize">13sp</item>
+    </style>
+
+    <style name="NavButton">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">30dp</item>
+        <item name="android:background">@drawable/bg_nav_button</item>
+        <item name="android:gravity">center_vertical</item>
+        <item name="android:textColor">@color/nav_text</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:textStyle">normal</item>
+        <item name="android:paddingLeft">40dp</item>
+        <item name="android:paddingRight">8dp</item>
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
+        <item name="android:includeFontPadding">false</item>
+    </style>
+
+    <style name="CarInput">
+        <item name="android:layout_height">40dp</item>
+        <item name="android:background">@drawable/bg_input</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textColorHint">@color/text_secondary</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:paddingLeft">16dp</item>
+        <item name="android:paddingRight">16dp</item>
+        <item name="android:singleLine">true</item>
+    </style>
+</resources>

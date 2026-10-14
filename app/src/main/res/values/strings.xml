@@ -1,0 +1,20 @@
+<resources>
+    <string name="app_name">飞牛车载音乐</string>
+    <string name="server_hint">NAS 地址或 FN ID</string>
+    <string name="username_hint">音乐／fnOS 用户名</string>
+    <string name="password_hint">音乐／fnOS 密码</string>
+    <string name="login">连接并登录</string>
+    <string name="search_hint">搜索歌曲 / 歌手 / 专辑</string>
+    <string name="search">搜索</string>
+    <string name="all_tracks">全部歌曲</string>
+    <string name="previous">上一首</string>
+    <string name="play_pause">播放 / 暂停</string>
+    <string name="next">下一首</string>
+    <string name="logout">退出登录</string>
+    <string name="unknown_title">未知歌曲</string>
+    <string name="unknown_artist">未知歌手</string>
+    <string name="not_playing">尚未播放</string>
+    <string name="check_update">检查更新</string>
+    <!-- 专用公开更新目录的文件直链。 -->
+    <string name="update_manifest_url" translatable="false">http://ikuai.qiuxiaoyu.top:5244/d/20T%E5%A4%A7%E7%A1%AC%E7%9B%98/QY_net/feiniu-updates/update.json</string>
+</resources>

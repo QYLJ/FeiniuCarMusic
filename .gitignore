@@ -1,0 +1,32 @@
+/.gradle/
+/.manual-build/
+/.fnconnect-e2e/
+/.ui-refresh/
+/.transcode-research/
+/.lint-scan-*/
+/.update-e2e/
+/.fnconnect-*
+/.idea/
+/local.properties
+emulator-*.log
+**/build/
+*.iml
+*.apk
+*.aab
+captures/
+.externalNativeBuild/
+
+# Local screenshots and generated update packages
+/*.png
+/release/*.png
+/release/ui-preview/
+/release/update-upload/
+
+# Local credentials, signing keys, and logs
+.env
+.env.*
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.log

@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/login_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/bg_screen_gradient"
+    android:gravity="center"
+    android:orientation="horizontal"
+    android:focusableInTouchMode="true"
+    android:padding="18dp">
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="0.9"
+        android:gravity="center_vertical"
+        android:orientation="vertical"
+        android:paddingRight="22dp">
+
+        <com.feiniu.carmusic.ui.NavItemView
+            android:id="@+id/login_brand"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_marginBottom="16dp"
+            android:background="@drawable/bg_brand_mark"
+            android:tag="brand_music" />
+
+        <TextView
+            android:id="@+id/login_heading"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="飞牛车载音乐"
+            android:textColor="@color/text_primary"
+            android:textSize="26sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:lineSpacingExtra="5dp"
+            android:text="你的音乐，一路随行\n连接 NAS，收藏与歌单随时可听"
+            android:textColor="@color/text_secondary"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/login_update_button"
+            style="@style/CompactButton"
+            android:layout_width="wrap_content"
+            android:layout_marginTop="18dp"
+            android:text="@string/check_update" />
+    </LinearLayout>
+
+    <ScrollView
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1.1"
+        android:fillViewport="true"
+        android:scrollbars="none">
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="vertical">
+    <LinearLayout
+        android:id="@+id/login_form"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_panel"
+        android:orientation="vertical"
+        android:padding="14dp">
+
+        <TextView
+            android:id="@+id/login_form_heading"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:includeFontPadding="false"
+            android:text="连接音乐库"
+            android:textColor="@color/text_primary"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <EditText
+            android:id="@+id/server_input"
+            style="@style/CarInput"
+            android:layout_width="match_parent"
+            android:hint="@string/server_hint"
+            android:inputType="textUri" />
+
+        <EditText
+            android:id="@+id/username_input"
+            style="@style/CarInput"
+            android:layout_width="match_parent"
+            android:layout_marginTop="8dp"
+            android:hint="@string/username_hint"
+            android:inputType="text" />
+
+        <EditText
+            android:id="@+id/password_input"
+            style="@style/CarInput"
+            android:layout_width="match_parent"
+            android:layout_marginTop="8dp"
+            android:hint="@string/password_hint"
+            android:inputType="textPassword" />
+
+        <TextView
+            android:id="@+id/status_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:minHeight="22dp"
+            android:textColor="@color/text_secondary"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/login_button"
+            style="@style/AccentButton"
+            android:layout_width="match_parent"
+            android:layout_height="42dp"
+            android:layout_marginTop="2dp"
+            android:text="@string/login" />
+    </LinearLayout>
+    </LinearLayout>
+    </ScrollView>
+</LinearLayout>
