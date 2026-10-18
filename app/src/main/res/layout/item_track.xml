@@ -31,7 +31,7 @@
             android:ellipsize="end"
             android:maxLines="1"
             android:textColor="@color/text_primary"
-            android:textSize="14sp"
+            android:textSize="16sp"
             android:textStyle="bold" />
 
         <TextView
@@ -46,7 +46,8 @@
 
     <TextView
         android:id="@+id/track_duration"
-        android:layout_width="58dp"
+        android:layout_width="wrap_content"
+        android:minWidth="48dp"
         android:layout_height="wrap_content"
         android:gravity="right"
         android:textColor="@color/text_secondary"

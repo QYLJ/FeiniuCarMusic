@@ -12,13 +12,12 @@ import java.io.FileOutputStream;
 import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.Comparator;
-import java.util.concurrent.locks.ReentrantLock;
 
 final class TrackFileCache {
     interface ReadyListener { void onReady(ProgressiveAudioFile audio) throws Exception; }
+    interface CompleteListener { void onComplete(AudioFile audio) throws Exception; }
     private static final long MAX_CACHE_BYTES = 512L * 1024L * 1024L;
-    private static final ReentrantLock[] LOCKS = new ReentrantLock[16];
-    static { for (int i = 0; i < LOCKS.length; i++) LOCKS[i] = new ReentrantLock(); }
+    private static final KeyedLocks LOCKS = new KeyedLocks();
 
     private final File directory;
     private final FnApiClient api;
@@ -34,17 +33,31 @@ final class TrackFileCache {
     }
 
     AudioFile getOrDownload(Track track, String transcodeCodec, int bitrateKbps, ReadyListener ready) throws Exception {
+        return getOrDownload(track, transcodeCodec, bitrateKbps, ready, null);
+    }
+
+    AudioFile getOrDownload(Track track, String transcodeCodec, int bitrateKbps, ReadyListener ready,
+                           NasTranscodeDownloader.StageListener stages) throws Exception {
+        return getOrDownload(track, transcodeCodec, bitrateKbps, ready, stages, null);
+    }
+
+    AudioFile getOrDownload(Track track, String transcodeCodec, int bitrateKbps, ReadyListener ready,
+                           NasTranscodeDownloader.StageListener stages, CompleteListener complete) throws Exception {
         String key = api.session().getBaseUrl() + "|" + api.session().getUsername()
                 + "|" + track.guid + "|" + transcodeCodec
                 + ("mp3".equals(transcodeCodec) ? "|" + bitrateKbps : "") + "|stream-audio-v3";
-        ReentrantLock lock = LOCKS[(key.hashCode() & 0x7fffffff) % LOCKS.length];
-        lock.lockInterruptibly();
-        try { return downloadLocked(track, transcodeCodec, bitrateKbps, key, ready); }
-        finally { lock.unlock(); }
+        long started = System.nanoTime();
+        KeyedLocks.Guard lock = LOCKS.acquire(key);
+        try {
+            if (stages != null) stages.onStage("取得歌曲缓存 · "
+                    + java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) + " ms");
+            return downloadLocked(track, transcodeCodec, bitrateKbps, key, ready, stages, complete);
+        } finally { lock.close(); }
     }
 
     private AudioFile downloadLocked(final Track track, String transcodeCodec, int bitrateKbps,
-                                     String key, final ReadyListener ready) throws Exception {
+                                     String key, final ReadyListener ready, NasTranscodeDownloader.StageListener stages,
+                                     final CompleteListener complete) throws Exception {
         if (Thread.currentThread().isInterrupted()) throw new InterruptedException("下载已取消");
         File target = new File(directory, hash(key) + ".track");
         File completeMarker = new File(directory, target.getName() + ".complete");
@@ -55,6 +68,7 @@ final class TrackFileCache {
                 cached = readDescription(target, description);
             } catch (Exception ignored) { /* Rebuild a corrupted cache descriptor. */ }
             if (cached != null) {
+                if (stages != null) stages.onStage("命中完整音频缓存");
                 target.setLastModified(System.currentTimeMillis());
                 if (ready != null) {
                     ProgressiveAudioFile live = new ProgressiveAudioFile(cached);
@@ -62,6 +76,7 @@ final class TrackFileCache {
                     try { ready.onReady(live); }
                     catch (Exception error) { live.close(); throw error; }
                 }
+                if (complete != null) complete.onComplete(cached);
                 return cached;
             }
         }
@@ -88,19 +103,21 @@ final class TrackFileCache {
                 audio = original;
             } else {
                 audio = new NasTranscodeDownloader(api).download(track.guid, transcodeCodec, bitrateKbps, target,
-                        ready == null ? null : new NasTranscodeDownloader.ProgressListener() {
+                        ready == null && complete == null ? null : new NasTranscodeDownloader.ProgressListener() {
                             @Override public void onProgress(AudioFile audio, long bytes, boolean finished) throws Exception {
-                                if (live[0] == null) {
+                                if (ready != null && live[0] == null) {
                                     live[0] = new ProgressiveAudioFile(audio);
                                     live[0].publish(bytes, -1);
                                     if (finished) live[0].finish();
                                     ready.onReady(live[0]);
-                                } else {
+                                } else if (live[0] != null) {
                                     live[0].publish(bytes, -1);
                                     if (finished) live[0].finish();
                                 }
+                                // Completed bytes are playable before NAS heartbeat/quit cleanup returns.
+                                if (finished && complete != null) complete.onComplete(audio);
                             }
-                        });
+                        }, stages);
             }
             if (Thread.currentThread().isInterrupted()) throw new InterruptedException("下载已取消");
             if (target.length() <= 0L) throw new Exception("音频文件为空");
@@ -109,6 +126,7 @@ final class TrackFileCache {
                 throw new Exception("无法标记歌曲缓存");
             }
             completed = true;
+            if (transcodeCodec.length() == 0 && complete != null) complete.onComplete(audio);
             if (ready != null && live[0] == null) {
                 live[0] = new ProgressiveAudioFile(audio);
                 live[0].finish();

@@ -7,11 +7,17 @@
     android:focusableInTouchMode="true"
     android:orientation="horizontal">
 
-    <ScrollView
+    <LinearLayout
         android:id="@+id/library_sidebar"
         android:layout_width="148dp"
         android:layout_height="match_parent"
         android:background="@drawable/bg_sidebar"
+        android:orientation="vertical">
+    <ScrollView
+        android:id="@+id/sidebar_navigation"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
         android:fillViewport="true"
         android:scrollbars="none">
     <LinearLayout
@@ -49,6 +55,8 @@
                     android:layout_height="wrap_content"
                     android:includeFontPadding="false"
                     android:text="飞牛音乐"
+                    android:singleLine="true"
+                    android:ellipsize="end"
                     android:textColor="@color/text_primary"
                     android:textSize="15sp"
                     android:textStyle="bold" />
@@ -76,6 +84,36 @@
         <com.feiniu.carmusic.ui.NavItemView android:id="@+id/nav_playlists" style="@style/NavButton" android:tag="playlist" android:text="歌单" />
     </LinearLayout>
     </ScrollView>
+    <LinearLayout
+        android:id="@+id/sidebar_playlists"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:paddingLeft="8dp"
+        android:paddingRight="8dp"
+        android:paddingBottom="4dp"
+        android:visibility="gone">
+        <ListView
+            android:id="@+id/sidebar_playlist_list"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:divider="@android:color/transparent"
+            android:dividerHeight="3dp"
+            android:listSelector="@android:color/transparent" />
+        <TextView
+            android:id="@+id/sidebar_playlist_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="40dp"
+            android:gravity="center"
+            android:padding="4dp"
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp"
+            android:visibility="gone" />
+    </LinearLayout>
+    </LinearLayout>
 
     <LinearLayout
         android:id="@+id/library_content"
@@ -137,22 +175,24 @@
                 android:layout_marginLeft="5dp"
                 android:text="搜索" />
 
-            <Button
+            <com.feiniu.carmusic.ui.IconButton
                 android:id="@+id/play_all_button"
                 style="@style/CompactButton"
-                android:layout_width="wrap_content"
+                android:layout_width="36dp"
+                android:minWidth="0dp"
+                android:tag="play"
                 android:layout_marginLeft="5dp"
                 android:background="@drawable/bg_accent_button"
                 android:text="播放全部" />
 
             <com.feiniu.carmusic.ui.IconButton
-                android:id="@+id/update_button"
+                android:id="@+id/settings_button"
                 style="@style/CompactButton"
                 android:layout_width="36dp"
                 android:minWidth="0dp"
-                android:tag="refresh"
+                android:tag="settings"
                 android:layout_marginLeft="5dp"
-                android:text="更新" />
+                android:text="设置" />
 
             <com.feiniu.carmusic.ui.IconButton
                 android:id="@+id/logout_button"
@@ -252,7 +292,7 @@
                     android:maxLines="1"
                     android:text="@string/not_playing"
                     android:textColor="@color/text_primary"
-                    android:textSize="14sp"
+                    android:textSize="16sp"
                     android:textStyle="bold" />
 
                 <TextView

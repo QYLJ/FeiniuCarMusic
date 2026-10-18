@@ -15,6 +15,7 @@ import android.widget.Toast;
 
 import com.feiniu.carmusic.R;
 import com.feiniu.carmusic.data.TlsCompat;
+import com.feiniu.carmusic.diagnostics.AppLog;
 
 import org.json.JSONObject;
 
@@ -104,10 +105,12 @@ public final class AppUpdater {
             checking = true;
         }
         if (userInitiated) Toast.makeText(activity, "正在检查更新…", Toast.LENGTH_SHORT).show();
+        AppLog.info("update.check_started", userInitiated ? "manual" : "automatic");
         EXECUTOR.execute(new Runnable() {
             @Override public void run() {
                 try {
                     final UpdateInfo info = fetchManifest(manifestUrl);
+                    AppLog.info("update.check_succeeded", "versionCode=" + info.versionCode);
                     saveManifest(context, manifestUrl, info);
                     MAIN.post(new Runnable() {
                         @Override public void run() {
@@ -117,6 +120,7 @@ public final class AppUpdater {
                         }
                     });
                 } catch (final Exception error) {
+                    AppLog.error("update.check_failed", error);
                     MAIN.post(new Runnable() {
                         @Override public void run() {
                             finishChecking();
@@ -222,6 +226,7 @@ public final class AppUpdater {
             @Override public void run() {
                 try {
                     final File apk = downloadAndVerify(activity, info);
+                    AppLog.info("update.download_verified", "versionCode=" + info.versionCode);
                     MAIN.post(new Runnable() {
                         @Override public void run() {
                             finishDownloading();
@@ -230,6 +235,7 @@ public final class AppUpdater {
                         }
                     });
                 } catch (final Exception error) {
+                    AppLog.error("update.download_failed", error);
                     MAIN.post(new Runnable() {
                         @Override public void run() {
                             finishDownloading();

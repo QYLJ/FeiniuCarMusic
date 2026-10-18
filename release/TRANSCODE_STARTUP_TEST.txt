@@ -1,0 +1,21 @@
+飞牛车载音乐：转码首播优化测试包
+构建日期：2026-10-17
+
+安装文件：FeiniuCarMusic-transcode-startup-test.apk
+包名：com.feiniu.carmusic
+版本：0.3.15-ui-navigation / versionCode 22（沿用当前版本，供手动覆盖测试）
+最低系统：Android 4.0 / API 14
+大小：4,341,307 字节
+SHA-256：788C87ECD875BC3D5A21DA00716DEA7EC59D157B744B694ADBA475EF697B637E
+
+改进：
+1. 转码启动、播放列表、初始化段与音频分片允许复用连接，减少外网/中继的反复建连等待。
+2. 临时 404、超时和服务器暂时失败有时限地重试；持续失败按具体资源显示原因，保留 HTTP 状态。
+3. 声音诊断记录各阶段耗时，长按播放页音质标签后可复制，便于定位用户车机仍然慢或失败的阶段。
+
+验证：153 项自动测试通过，2 项可选联网测试跳过；Lint 无错误。
+Android 4.0.4 的 MP3 / FLAC 完整文件播放和 Android 7.1.1 的渐进播放、404 恢复、暂停续播、定位、切歌及失败清理均通过。
+受控模拟线路中 MP3 首播由 4058 ms 降至 785 ms；实际车机仍受系统版本、NAS、线路和播放器预读影响。Android 4/5 仍采用完整文件模式。
+
+本包未上传线上；未改动 release/update-upload 中已有正式 APK 与 update.json。
+详细记录：仓库根目录 TEST_REPORT.md 与 TRANSCODE_STARTUP_REVIEW.md。

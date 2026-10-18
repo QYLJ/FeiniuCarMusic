@@ -4,7 +4,9 @@ import com.feiniu.carmusic.data.FnApiClient;
 import com.feiniu.carmusic.data.ApiException;
 
 import java.io.File;
+import java.io.IOException;
 import java.io.InterruptedIOException;
+import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
@@ -14,25 +16,34 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 final class NasTranscodeDownloader {
     interface ProgressListener { void onProgress(AudioFile audio, long bytes, boolean complete) throws Exception; }
-    private static final ReentrantLock[] SESSION_LOCKS = new ReentrantLock[16];
-    static { for (int i = 0; i < SESSION_LOCKS.length; i++) SESSION_LOCKS[i] = new ReentrantLock(); }
+    interface StageListener { void onStage(String stage); }
+    private static final KeyedLocks SESSION_LOCKS = new KeyedLocks();
     private final FnApiClient api;
-    NasTranscodeDownloader(FnApiClient api) { this.api = api; }
+    private final long readinessWaitMs;
+    NasTranscodeDownloader(FnApiClient api) { this(api, 20000L); }
+    NasTranscodeDownloader(FnApiClient api, long readinessWaitMs) {
+        this.api = api;
+        this.readinessWaitMs = Math.max(1L, readinessWaitMs);
+    }
 
     AudioFile download(final String guid, String codec, File output) throws Exception {
         return download(guid, codec, 192, output, null);
     }
 
     AudioFile download(final String guid, String codec, int bitrateKbps, File output, ProgressListener progress) throws Exception {
+        return download(guid, codec, bitrateKbps, output, progress, null);
+    }
+
+    AudioFile download(final String guid, String codec, int bitrateKbps, File output,
+                       ProgressListener progress, StageListener stages) throws Exception {
+        final long startedAt = System.nanoTime();
         String key = api.session().getBaseUrl() + "|" + guid;
-        ReentrantLock lock = SESSION_LOCKS[(key.hashCode() & 0x7fffffff) % SESSION_LOCKS.length];
-        lock.lockInterruptibly();
+        KeyedLocks.Guard lock = SESSION_LOCKS.acquire(key);
         ScheduledExecutorService heartbeat = null;
         ScheduledFuture<?> heartbeatTask = null;
         boolean requested = false;
@@ -40,9 +51,12 @@ final class NasTranscodeDownloader {
         final AtomicLong downloadedMs = new AtomicLong();
         final AtomicLong lastHeartbeatMs = new AtomicLong();
         try {
+            stage(stages, "取得转码会话", startedAt);
             checkInterrupted();
             requested = true;
             api.startTranscode(guid, codec, bitrateKbps);
+            stage(stages, "NAS 转码启动响应", startedAt);
+            final long startupDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(readinessWaitMs);
             heartbeat = Executors.newSingleThreadScheduledExecutor();
             heartbeatTask = heartbeat.scheduleAtFixedRate(new Runnable() {
                 @Override public void run() {
@@ -63,7 +77,11 @@ final class NasTranscodeDownloader {
                 long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(10);
                 while (System.nanoTime() < deadline) {
                     checkInterrupted();
-                    Playlist playlist = readPlaylist(playlistUrl, 0);
+                    long resourceDeadline = downloadedSegments == 0 ? startupDeadline
+                            : System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(readinessWaitMs);
+                    Playlist playlist = readPlaylist(playlistUrl, 0, resourceDeadline);
+                    if (downloadedSegments == 0 && !playlist.segments.isEmpty())
+                        stage(stages, "转码列表就绪", startedAt);
                     for (Segment segment : playlist.segments) {
                         if (segment.sequence < nextSequence) continue;
                         if (segment.sequence != nextSequence) throw new ApiException("转码分片缺失，无法生成完整音频");
@@ -71,11 +89,17 @@ final class NasTranscodeDownloader {
                         if (!segment.mapUrl.equals(currentMap)) {
                             if (currentMap.length() > 0) throw new ApiException("转码中途改变初始化段，无法安全合并");
                             if (segment.mapUrl.length() > 0) {
-                                assembler.acceptInitialization(readWithRetry(segment.mapUrl, 2 * 1024 * 1024));
+                                assembler.acceptInitialization(readWithRetry(segment.mapUrl, 2 * 1024 * 1024,
+                                        "转码初始化段", resourceDeadline));
                                 currentMap = segment.mapUrl;
+                                stage(stages, "转码初始化段就绪", startedAt);
                             }
                         }
-                        assembler.appendSegment(readWithRetry(segment.url, 8 * 1024 * 1024));
+                        if (downloadedSegments > 0) resourceDeadline = System.nanoTime()
+                                + TimeUnit.MILLISECONDS.toNanos(readinessWaitMs);
+                        assembler.appendSegment(readWithRetry(segment.url, 8 * 1024 * 1024,
+                                "转码音频分片 " + segment.sequence, resourceDeadline));
+                        if (downloadedSegments == 0) stage(stages, "首段音频就绪", startedAt);
                         if (progress != null && assembler.getTotalSamples() > 0)
                             progress.onProgress(audioFile(output, assembler), output.length(), false);
                         if (assembler.getWrittenBytes() > 512L * 1024L * 1024L) throw new ApiException("转码歌曲超出缓存容量");
@@ -87,10 +111,14 @@ final class NasTranscodeDownloader {
                         if (downloadedSegments == 0) throw new ApiException("NAS 未返回音频分片");
                         assembler.finish();
                         AudioFile audio = audioFile(output, assembler);
+                        stage(stages, "完整音频就绪", startedAt);
                         if (progress != null) progress.onProgress(audio, output.length(), true);
                         return audio;
                     }
-                    Thread.sleep(1000L);
+                    if (downloadedSegments == 0 && System.nanoTime() >= startupDeadline)
+                        throw new ApiException("转码播放列表持续未提供音频分片，请检查 NAS 转码状态后重试");
+                    Thread.sleep(downloadedSegments == 0 ? Math.max(1L, Math.min(1000L,
+                            TimeUnit.NANOSECONDS.toMillis(startupDeadline - System.nanoTime()))) : 1000L);
                 }
                 throw new ApiException("NAS 转码下载超时，请重试或切换原始音质");
             } finally { assembler.close(); }
@@ -110,7 +138,7 @@ final class NasTranscodeDownloader {
                 try { api.quitTranscode(guid); } catch (Exception ignored) { }
                 finally { if (interrupted) Thread.currentThread().interrupt(); }
             }
-            lock.unlock();
+            lock.close();
         }
     }
 
@@ -119,25 +147,55 @@ final class NasTranscodeDownloader {
                 assembler.getBitDepth(), assembler.getChannels(), true, assembler.getBitrateKbps());
     }
 
-    private Playlist readPlaylist(String url, int depth) throws Exception {
-        if (depth > 3) throw new ApiException("转码播放列表嵌套过深");
-        Playlist playlist = parsePlaylist(url, new String(readWithRetry(url, 1024 * 1024), "UTF-8"));
-        return playlist.variant.length() == 0 ? playlist : readPlaylist(playlist.variant, depth + 1);
+    private static void stage(StageListener listener, String name, long startedAt) {
+        if (listener != null) listener.onStage(name + " · "
+                + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt) + " ms");
     }
 
-    private byte[] readWithRetry(String url, int limit) throws Exception {
+    private Playlist readPlaylist(String url, int depth, long deadline) throws Exception {
+        if (depth > 3) throw new ApiException("转码播放列表嵌套过深");
+        Playlist playlist = parsePlaylist(url, new String(readWithRetry(url, 1024 * 1024,
+                "转码播放列表", deadline), "UTF-8"));
+        return playlist.variant.length() == 0 ? playlist : readPlaylist(playlist.variant, depth + 1, deadline);
+    }
+
+    private byte[] readWithRetry(String url, int limit, String resource, long deadline) throws Exception {
         Exception last = null;
-        for (int i = 0; i < 3; i++) {
+        int attempt = 0;
+        while (System.nanoTime() < deadline) {
             checkInterrupted();
-            try { return api.readMusicResource(url, limit); }
-            catch (InterruptedIOException error) { throw error; }
+            long remainingMs = Math.max(1L, TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()));
+            try { return api.readMusicResource(url, limit, (int) Math.min(4000L, remainingMs), remainingMs); }
             catch (Exception error) {
-                if (error instanceof ApiException && ((ApiException) error).getStatusCode() == 401) throw error;
+                checkInterrupted();
+                // A socket timeout is recoverable; an actual cancellation must stop immediately.
+                if (error instanceof InterruptedIOException && !(error instanceof SocketTimeoutException)) throw error;
+                if (!retryable(error)) throw resourceFailure(resource, error, false);
                 last = error;
-                if (i < 2) Thread.sleep(500L * (i + 1));
+                long delay = Math.min(1000L, 250L * ++attempt);
+                remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+                if (remainingMs > 0L) Thread.sleep(Math.min(delay, remainingMs));
             }
         }
-        throw last;
+        checkInterrupted();
+        throw resourceFailure(resource, last, true);
+    }
+
+    private static boolean retryable(Exception error) {
+        if (error instanceof ApiException) {
+            int status = ((ApiException) error).getStatusCode();
+            return status == 404 || status == 408 || status == 429 || status >= 500 && status <= 599;
+        }
+        return error instanceof IOException;
+    }
+
+    private static ApiException resourceFailure(String resource, Exception cause, boolean expired) {
+        int status = cause instanceof ApiException ? ((ApiException) cause).getStatusCode() : 0;
+        String detail = cause == null ? "等待资源超时" : cause.getMessage();
+        if (expired && status == 404) detail = "持续返回 HTTP 404，资源尚未生成、会话已失效或访问路径不可用，请重试并检查 NAS 转码状态与转发配置";
+        ApiException error = new ApiException(resource + (expired ? "等待超时：" : "读取失败：") + detail, status);
+        if (cause != null) error.initCause(cause);
+        return error;
     }
 
     static Playlist parsePlaylist(String url, String text) throws Exception {

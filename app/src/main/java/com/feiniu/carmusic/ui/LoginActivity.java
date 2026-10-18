@@ -18,6 +18,7 @@ import com.feiniu.carmusic.R;
 import com.feiniu.carmusic.data.FnApiClient;
 import com.feiniu.carmusic.data.FnConnectResolver;
 import com.feiniu.carmusic.data.SessionStore;
+import com.feiniu.carmusic.diagnostics.AppLog;
 import com.feiniu.carmusic.update.AppUpdater;
 
 import java.util.concurrent.ExecutorService;
@@ -56,20 +57,21 @@ public final class LoginActivity extends Activity {
                 boolean compact = (b - t) / density < 400 || (r - l) / density < 760;
                 int inset = Math.round((compact ? 12 : 40) * density);
                 root.setPadding(inset, inset, inset, inset);
-                ((TextView) findViewById(R.id.login_heading)).setTextSize(compact ? 24 : 34);
+                UiAppearance.textSize((TextView) findViewById(R.id.login_heading), compact ? 24 : 34);
                 int formInset = Math.round((compact ? 12 : 26) * density);
                 findViewById(R.id.login_form).setPadding(formInset, formInset, formInset, formInset);
                 EditText[] fields = {serverInput, usernameInput, passwordInput};
                 for (int i = 0; i < fields.length; i++) {
                     LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) fields[i].getLayoutParams();
-                    params.height = Math.round((compact ? 36 : 40) * density);
+                    params.height = Math.round(Math.max(compact ? 36 : 40,
+                            32 * UiAppearance.textScale(LoginActivity.this)) * density);
                     params.topMargin = Math.round((i == 0 ? 0 : compact ? 6 : 8) * density);
                     fields[i].setLayoutParams(params);
                 }
                 LinearLayout.LayoutParams heading = (LinearLayout.LayoutParams) findViewById(R.id.login_form_heading).getLayoutParams();
                 heading.bottomMargin = Math.round((compact ? 8 : 12) * density);
                 findViewById(R.id.login_form_heading).setLayoutParams(heading);
-                statusText.setTextSize(compact ? 11 : 13);
+                UiAppearance.textSize(statusText, compact ? 12 : 13);
                 statusText.setMinHeight(Math.round((compact ? 18 : 22) * density));
             }
         });
@@ -88,6 +90,11 @@ public final class LoginActivity extends Activity {
                 AppUpdater.check(LoginActivity.this, true);
             }
         });
+        findViewById(R.id.login_feedback_button).setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) {
+                startActivity(new Intent(LoginActivity.this, FeedbackActivity.class));
+            }
+        });
 
         if (session.hasSession()) openLibrary();
     }
@@ -95,6 +102,7 @@ public final class LoginActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        UiAppearance.apply(findViewById(R.id.login_root));
         if (!isFinishing()) AppUpdater.onResume(this);
     }
 
@@ -120,6 +128,7 @@ public final class LoginActivity extends Activity {
         }
 
         hideKeyboard();
+        AppLog.info("login.started", FnConnectResolver.looksLikeFnIdInput(server) ? "route=fn_connect" : "route=direct");
         loginButton.setEnabled(false);
         showStatus(FnConnectResolver.looksLikeFnIdInput(server)
                 ? "正在通过 FN Connect 查找 NAS…" : "正在连接飞牛音乐服务…", false);
@@ -128,6 +137,7 @@ public final class LoginActivity extends Activity {
             public void run() {
                 try {
                     api.login(server, username, password);
+                    AppLog.info("login.succeeded", "music session established");
                     main.post(new Runnable() {
                         @Override
                         public void run() {
@@ -139,6 +149,7 @@ public final class LoginActivity extends Activity {
                         }
                     });
                 } catch (final Exception error) {
+                    AppLog.error("login.failed", error);
                     main.post(new Runnable() {
                         @Override
                         public void run() {

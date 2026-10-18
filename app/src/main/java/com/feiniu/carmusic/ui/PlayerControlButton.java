@@ -3,7 +3,6 @@ package com.feiniu.carmusic.ui;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
-import android.graphics.RectF;
 import android.util.AttributeSet;
 import android.view.View;
 import com.feiniu.carmusic.R;
@@ -12,7 +11,6 @@ public final class PlayerControlButton extends View {
     static final int BACK = 1, MODE = 2, PREVIOUS = 3, PLAY = 4, NEXT = 5, HEART = 6, QUEUE = 7;
     private final MusicIcons icons = new MusicIcons();
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final RectF bounds = new RectF();
     private int type;
     private String label = "";
     private boolean active;
@@ -47,12 +45,14 @@ public final class PlayerControlButton extends View {
         super.onDraw(canvas);
         boolean compact = getHeight() < dp(76);
         float cx = getWidth() / 2f;
-        float cy = label.length() == 0 ? getHeight() / 2f : getHeight() * .38f;
+        float cy = getHeight() / 2f;
         float iconSize = dp(compact ? 22 : 26);
+        if (type == MODE || type == HEART || type == QUEUE) iconSize = dp(compact ? 26 : 28);
+        if (type == PREVIOUS || type == NEXT) iconSize = dp(compact ? 30 : 32);
         int color = getResources().getColor(type == HEART && active ? R.color.primary : R.color.text_primary);
         if (type == PLAY) {
             paint.setColor(getResources().getColor(isPressed() ? R.color.primary_dark : R.color.primary));
-            float radius = dp(compact ? 21 : 27);
+            float radius = Math.min(dp(compact ? 28 : 33), Math.min(getWidth(), getHeight()) * .44f);
             canvas.drawCircle(cx, cy, radius, paint);
             if (isFocused()) {
                 paint.setStyle(Paint.Style.STROKE);
@@ -61,12 +61,11 @@ public final class PlayerControlButton extends View {
                 canvas.drawCircle(cx, cy, radius, paint);
                 paint.setStyle(Paint.Style.FILL);
             }
-            iconSize = dp(compact ? 21 : 25);
+            iconSize = dp(compact ? 26 : 30);
             color = 0xffffffff;
         } else if (isPressed() || isFocused()) {
             paint.setColor(getResources().getColor(R.color.surface_pressed));
-            bounds.set(dp(4), dp(4), getWidth() - dp(4), getHeight() - dp(4));
-            canvas.drawRoundRect(bounds, dp(10), dp(10), paint);
+            canvas.drawCircle(cx, cy, Math.min(getWidth(), getHeight()) * .42f, paint);
         }
         String icon = type == BACK ? "back" : type == PREVIOUS ? "previous" : type == NEXT ? "next"
                 : type == PLAY ? (active ? "pause" : "play") : type == HEART ? "heart"
@@ -74,12 +73,6 @@ public final class PlayerControlButton extends View {
         if (type == MODE) icon = "随机".equals(label) ? "shuffle" : "单曲".equals(label) ? "repeat_one"
                 : "列表循环".equals(label) ? "repeat" : "sequence";
         icons.draw(canvas, icon, cx, cy, iconSize, color, type == HEART && active);
-        if (label.length() > 0) {
-            paint.setColor(getResources().getColor(R.color.text_secondary));
-            paint.setTextAlign(Paint.Align.CENTER);
-            paint.setTextSize((compact ? 11 : 13) * getResources().getDisplayMetrics().scaledDensity);
-            canvas.drawText(label, cx, getHeight() - dp(compact ? 5 : 9), paint);
-        }
     }
 
     private float dp(float value) { return value * getResources().getDisplayMetrics().density; }

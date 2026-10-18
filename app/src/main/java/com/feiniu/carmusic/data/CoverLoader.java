@@ -42,15 +42,16 @@ public final class CoverLoader {
 
     public void load(final String coverId, final int size, final ImageView... targets) {
         if (targets == null || targets.length == 0) return;
+        final String key = coverId == null || coverId.length() == 0 ? "" : api.coverUrl(coverId, size);
         for (ImageView target : targets) {
             if (target == null) continue;
-            target.setTag(coverId);
+            target.setTag(key);
             target.setImageDrawable(null);
         }
         if (coverId == null || coverId.length() == 0) return;
-        Bitmap existing = cache.get(coverId);
+        Bitmap existing = cache.get(key);
         if (existing != null) {
-            setBitmap(coverId, targets, existing);
+            setBitmap(key, targets, existing);
             return;
         }
         executor.execute(new Runnable() {
@@ -59,11 +60,11 @@ public final class CoverLoader {
                 try {
                     final Bitmap bitmap = api.downloadCover(coverId, size);
                     if (bitmap == null) return;
-                    cache.put(coverId, bitmap);
+                    cache.put(key, bitmap);
                     main.post(new Runnable() {
                         @Override
                         public void run() {
-                            setBitmap(coverId, targets, bitmap);
+                            setBitmap(key, targets, bitmap);
                         }
                     });
                 } catch (Exception ignored) {

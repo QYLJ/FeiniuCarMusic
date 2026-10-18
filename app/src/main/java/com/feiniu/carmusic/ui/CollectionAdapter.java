@@ -43,6 +43,7 @@ final class CollectionAdapter extends BaseAdapter {
             holder = (Holder) convertView.getTag();
         }
         MediaCollection item = getItem(position);
+        UiAppearance.apply(convertView);
         holder.name.setText(item.name.length() == 0 ? "未命名" : item.name);
         String unit = MediaCollection.TYPE_ARTIST.equals(item.type) ? "首歌曲" : "首歌曲";
         holder.count.setText(item.trackCount > 0 ? item.trackCount + " " + unit : collectionType(item.type));

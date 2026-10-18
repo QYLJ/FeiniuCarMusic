@@ -10,8 +10,8 @@ import android.content.ServiceConnection;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
-import android.util.TypedValue;
 import android.view.KeyEvent;
+import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
@@ -27,7 +27,6 @@ import com.feiniu.carmusic.data.CoverLoader;
 import com.feiniu.carmusic.data.FnApiClient;
 import com.feiniu.carmusic.model.Track;
 import com.feiniu.carmusic.player.PlaybackService;
-import com.feiniu.carmusic.player.AudioCompatibility;
 import com.feiniu.carmusic.player.MediaKeyRouter;
 
 import java.util.ArrayList;
@@ -68,6 +67,8 @@ public final class PlayerActivity extends Activity {
     private View headerMeta;
     private View seekSection;
     private View controlBar;
+    private View controlsCluster;
+    private View primaryControls;
     private int responsiveWidth = -1;
     private int responsiveHeight = -1;
     private PlayerControlButton back;
@@ -123,6 +124,8 @@ public final class PlayerActivity extends Activity {
         headerMeta = findViewById(R.id.player_header_meta);
         seekSection = findViewById(R.id.player_seek_section);
         controlBar = findViewById(R.id.player_control_bar);
+        controlsCluster = findViewById(R.id.player_controls_cluster);
+        primaryControls = findViewById(R.id.player_primary_controls);
         back = (PlayerControlButton) findViewById(R.id.player_back);
         toggle = (PlayerControlButton) findViewById(R.id.player_toggle);
         mode = (PlayerControlButton) findViewById(R.id.player_mode);
@@ -188,12 +191,22 @@ public final class PlayerActivity extends Activity {
         quality.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { showAudioOptions(); }
         });
-        quality.setContentDescription("播放音质，点击选择 NAS 转码，长按查看声音诊断");
+        quality.setContentDescription("播放音质，点击快速设置，长按查看声音诊断");
         quality.setOnLongClickListener(new View.OnLongClickListener() {
             @Override public boolean onLongClick(View v) {
-                if (playback != null) new AlertDialog.Builder(PlayerActivity.this)
-                        .setTitle("声音诊断").setMessage(playback.getAudioDiagnostics())
-                        .setPositiveButton("知道了", null).show();
+                if (playback != null) {
+                    final String diagnostics = playback.getAudioDiagnostics();
+                    AudioSettingsDialogs.show(new AlertDialog.Builder(PlayerActivity.this)
+                            .setTitle("声音诊断").setMessage(diagnostics)
+                            .setNeutralButton("复制诊断", new DialogInterface.OnClickListener() {
+                                @Override public void onClick(DialogInterface dialog, int which) {
+                                    android.content.ClipboardManager clipboard = (android.content.ClipboardManager)
+                                            getSystemService(Context.CLIPBOARD_SERVICE);
+                                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("声音诊断", diagnostics));
+                                    Toast.makeText(PlayerActivity.this, "已复制声音诊断", Toast.LENGTH_SHORT).show();
+                                }
+                            }).setPositiveButton("知道了", null));
+                }
                 return true;
             }
         });
@@ -229,6 +242,9 @@ public final class PlayerActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        UiAppearance.apply(findViewById(R.id.player_root));
+        applyResponsivePlayerLayout(responsiveWidth, responsiveHeight);
+        lyricView.refreshTextSizes();
         AppUpdater.onResume(this);
     }
 
@@ -272,7 +288,9 @@ public final class PlayerActivity extends Activity {
         String subtitle = track.artist.length() == 0 ? getString(R.string.unknown_artist) : track.artist;
         if (track.album.length() > 0) subtitle += "  ·  " + track.album;
         artist.setText(subtitle);
-        quality.setText((state.audioDescription.length() == 0 ? track.qualityLabel() : state.audioDescription) + " ▾");
+        quality.setText(AudioSettingsDialogs.compactQuality(state.audioDescription) + " ▾");
+        quality.setContentDescription("当前音频：" + (state.audioDescription.length() == 0
+                ? track.qualityLabel() : state.audioDescription) + "，点击快速设置，长按查看声音诊断");
         if (!track.guid.equals(displayedGuid)) {
             displayedGuid = track.guid;
             CoverLoader.get(this).load(track.coverId, 720, cover, backgroundCover);
@@ -298,34 +316,9 @@ public final class PlayerActivity extends Activity {
     }
 
     private void showAudioOptions() {
-        if (playback == null) return;
-        final String[] labels = {"自动兼容", "原始音质", "NAS 转码 MP3（" + playback.getMp3BitrateKbps() + " kbps）", "NAS 转码 FLAC"};
-        new AlertDialog.Builder(this).setTitle("播放音质")
-                .setSingleChoiceItems(labels, playback.getAudioMode(), new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface dialog, int which) {
-                        playback.setAudioMode(which);
-                        dialog.dismiss();
-                        Toast.makeText(PlayerActivity.this, "已选择 " + AudioCompatibility.label(which), Toast.LENGTH_SHORT).show();
-                    }
-                }).setPositiveButton("MP3 码率", new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface dialog, int which) { showMp3Bitrates(); }
-                }).setNegativeButton("取消", null).show();
-    }
-
-    private void showMp3Bitrates() {
-        if (playback == null) return;
-        final int[] rates = {128, 192, 256, 320};
-        final String[] labels = {"128 kbps（省流量）", "192 kbps（默认）", "256 kbps", "320 kbps（高码率）"};
-        int checked = 1;
-        for (int i = 0; i < rates.length; i++) if (rates[i] == playback.getMp3BitrateKbps()) checked = i;
-        new AlertDialog.Builder(this).setTitle("NAS MP3 转码码率")
-                .setSingleChoiceItems(labels, checked, new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface dialog, int which) {
-                        playback.setMp3BitrateKbps(rates[which]);
-                        dialog.dismiss();
-                        Toast.makeText(PlayerActivity.this, "MP3 转码已设为 " + rates[which] + " kbps", Toast.LENGTH_SHORT).show();
-                    }
-                }).setNegativeButton("取消", null).show();
+        AudioSettingsDialogs.showModes(this, playback, new Runnable() {
+            @Override public void run() { updateUi(); }
+        }, true);
     }
 
     private void loadLyrics(final String guid) {
@@ -363,12 +356,14 @@ public final class PlayerActivity extends Activity {
     private void applyResponsivePlayerLayout(int width, int height) {
         if (width <= 0 || height <= 0) return;
         boolean compact = height < dp(400f) || width < dp(600f);
-        int headerHeight = dp(compact ? 54f : 70f);
-        int seekHeight = dp(42f);
-        int controlsHeight = dp(compact ? 66f : 94f);
+        float textScale = UiAppearance.textScale(this);
+        int headerHeight = dp((compact ? 56f : 72f) * Math.max(1, textScale));
+        int seekHeight = dp(24f + 20f * Math.max(1, textScale));
+        int controlsHeight = dp(compact ? 72f : 92f);
         resizeLinearHeight(playerHeader, headerHeight);
         resizeLinearHeight(seekSection, seekHeight);
         resizeLinearHeight(controlBar, controlsHeight);
+        layoutPlayerControls(width, compact);
 
         int horizontalPadding = dp(compact ? 10f : 18f);
         int topPadding = dp(compact ? 4f : 12f);
@@ -392,14 +387,44 @@ public final class PlayerActivity extends Activity {
         coverParams.height = coverSize;
         coverFrame.setLayoutParams(coverParams);
 
-        resizeLinearWidth(back, dp(compact ? 64f : 82f));
-        resizeLinearWidth(headerMeta, dp(compact ? 96f : 120f));
-        resizeLinearHeight(queueStatus, dp(compact ? 14f : 18f));
-        resizeLinearHeight(quality, dp(compact ? 36f : 44f));
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, compact ? 20f : 25f);
-        artist.setTextSize(TypedValue.COMPLEX_UNIT_SP, compact ? 13f : 16f);
-        quality.setTextSize(TypedValue.COMPLEX_UNIT_SP, compact ? 13f : 15f);
-        queueStatus.setTextSize(TypedValue.COMPLEX_UNIT_SP, compact ? 9f : 11f);
+        resizeLinearWidth(back, dp(compact ? 44f : 60f));
+        resizeLinearWidth(headerMeta, dp((compact ? 118f : 136f) * Math.max(1, textScale)));
+        resizeLinearHeight(queueStatus, dp(18f * Math.max(1, textScale)));
+        resizeLinearHeight(quality, dp(34f * Math.max(1, textScale)));
+        UiAppearance.textSize(title, compact ? 20f : 25f);
+        UiAppearance.textSize(artist, compact ? 13f : 16f);
+        UiAppearance.textSize(quality, 13f);
+        UiAppearance.textSize(queueStatus, 11f);
+        UiAppearance.apply(playerRoot);
+    }
+
+    private void layoutPlayerControls(int width, boolean compact) {
+        int clusterWidth = Math.min(Math.max(0, width - dp(24)), dp(compact ? 480 : 536));
+        FrameLayout.LayoutParams cluster = (FrameLayout.LayoutParams) controlsCluster.getLayoutParams();
+        cluster.width = clusterWidth;
+        cluster.height = dp(compact ? 64 : 80);
+        controlsCluster.setLayoutParams(cluster);
+
+        PlayerControlButton[] buttons = {mode, previous, toggle, next, favorite};
+        int[] widths = compact ? new int[] {56, 64, 80, 64, 56} : new int[] {64, 76, 88, 76, 64};
+        int primaryWidth = 0;
+        for (int value : widths) primaryWidth += dp(value);
+        int queueWidth = dp(compact ? 56 : 64);
+        boolean narrow = clusterWidth < primaryWidth + 2 * queueWidth + dp(16);
+        if (narrow) queueWidth = clusterWidth / 6;
+        FrameLayout.LayoutParams primary = (FrameLayout.LayoutParams) primaryControls.getLayoutParams();
+        primary.width = narrow ? clusterWidth - queueWidth : primaryWidth;
+        primary.gravity = (narrow ? Gravity.LEFT : Gravity.CENTER_HORIZONTAL) | Gravity.CENTER_VERTICAL;
+        primaryControls.setLayoutParams(primary);
+        for (int i = 0; i < buttons.length; i++) {
+            LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) buttons[i].getLayoutParams();
+            params.width = narrow ? 0 : dp(widths[i]);
+            params.weight = narrow ? 1f : 0f;
+            buttons[i].setLayoutParams(params);
+        }
+        FrameLayout.LayoutParams queueParams = (FrameLayout.LayoutParams) queue.getLayoutParams();
+        queueParams.width = queueWidth;
+        queue.setLayoutParams(queueParams);
     }
 
     private static void resizeLinearHeight(View view, int height) {

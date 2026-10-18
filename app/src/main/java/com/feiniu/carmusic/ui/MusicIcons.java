@@ -66,6 +66,14 @@ final class MusicIcons {
             path.lineTo(10, 10); path.close();
         } else if ("search".equals(icon)) {
             canvas.drawCircle(10.5f, 10.5f, 6.5f, paint); line(canvas, 15.5f, 15.5f, 21, 21);
+        } else if ("settings".equals(icon)) {
+            canvas.drawCircle(12, 12, 7, paint);
+            canvas.drawCircle(12, 12, 2.5f, paint);
+            for (int i = 0; i < 8; i++) {
+                double angle = i * Math.PI / 4;
+                line(canvas, 12 + (float) Math.cos(angle) * 7, 12 + (float) Math.sin(angle) * 7,
+                        12 + (float) Math.cos(angle) * 10, 12 + (float) Math.sin(angle) * 10);
+            }
         } else if ("refresh".equals(icon)) {
             bounds.set(4, 4, 20, 20); canvas.drawArc(bounds, 40, 280, false, paint);
             path.moveTo(21, 4); path.lineTo(20, 10); path.lineTo(14, 9);

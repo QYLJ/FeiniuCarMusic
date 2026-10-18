@@ -15,6 +15,12 @@
     <string name="unknown_artist">未知歌手</string>
     <string name="not_playing">尚未播放</string>
     <string name="check_update">检查更新</string>
+    <string name="feedback">问题反馈</string>
     <!-- 专用公开更新目录的文件直链。 -->
     <string name="update_manifest_url" translatable="false">http://ikuai.qiuxiaoyu.top:5244/d/20T%E5%A4%A7%E7%A1%AC%E7%9B%98/QY_net/feiniu-updates/update.json</string>
+    <!-- AList guest only receives upload permission inside /feedback via a write-enabled meta rule. -->
+    <string name="feedback_upload_url" translatable="false">http://ikuai.qiuxiaoyu.top:5244/api/fs/put</string>
+    <string name="feedback_upload_path" translatable="false">/feedback</string>
+    <!-- Public key is safe to ship; the matching private key is kept outside the app and repository. -->
+    <string name="feedback_public_key" translatable="false">MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAru7vJTQa0237wRU8V+WFg8B7DNeLjjAvfplrIy+LDIriq6aXxGG29n+fd79jj8pRfG6RbQBLCzrZV0F3L9fPvX504lvpxv15IQO5w6RbkJY/YxmBFpQxrfDULEuxuoxXQWZhqsq6EmxZpqL33SIOMOunnqAHYtRwasfHZC0HttBiSXm+PHzIB45j3d7zG7Z7AN1PlgShyB3z/VBhoJAY1uTXcs5zBws7tIeAu30/Y3hTvvxgwRJ8smRBMRFzJ1Eo978HniVeKMZV9v1L4kMv1CFnrHvVM+8Gl1xaBrgdLIDMFXAEGqoO3egAv+Se93p98zi8aB0UzxhbF71YB6RKOQIDAQAB</string>
 </resources>

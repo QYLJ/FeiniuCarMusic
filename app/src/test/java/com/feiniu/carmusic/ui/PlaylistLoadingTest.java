@@ -98,9 +98,7 @@ public class PlaylistLoadingTest {
         activity = controller.get();
         awaitLoad();
         activity.findViewById(R.id.nav_playlists).performClick();
-        GridView grid = (GridView) activity.findViewById(R.id.collection_grid);
-        awaitCount(grid, 1);
-        grid.performItemClick(null, 0, 0);
+        // The first playlist now opens directly in the existing song pane.
         awaitTracks(500);
     }
 
@@ -165,9 +163,6 @@ public class PlaylistLoadingTest {
         // Reopen with a server that caps each response to 100 despite size=500.
         serverPageSize.set(100);
         activity.findViewById(R.id.nav_playlists).performClick();
-        GridView grid = (GridView) activity.findViewById(R.id.collection_grid);
-        awaitCount(grid, 1);
-        grid.performItemClick(null, 0, 0);
         awaitTracks(100);
         ListView list = (ListView) activity.findViewById(R.id.track_list);
         assertEquals(100, list.getCount());

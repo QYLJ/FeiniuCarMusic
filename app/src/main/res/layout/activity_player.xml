@@ -8,7 +8,7 @@
         android:id="@+id/player_background_cover"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:alpha="0.22"
+        android:alpha="0.86"
         android:contentDescription="@null"
         android:scaleType="centerCrop" />
 
@@ -92,6 +92,11 @@
                     android:layout_height="44dp"
                     android:background="@drawable/bg_player_bar"
                     android:gravity="center"
+                    android:singleLine="true"
+                    android:ellipsize="end"
+                    android:includeFontPadding="false"
+                    android:paddingLeft="6dp"
+                    android:paddingRight="6dp"
                     android:text="音质"
                     android:textColor="@color/primary"
                     android:textSize="15sp"
@@ -198,48 +203,59 @@
             </LinearLayout>
         </LinearLayout>
 
-        <LinearLayout
+        <FrameLayout
             android:id="@+id/player_control_bar"
             android:layout_width="match_parent"
-            android:layout_height="94dp"
-            android:background="#B018161F"
-            android:orientation="horizontal">
+            android:layout_height="92dp">
 
-            <com.feiniu.carmusic.ui.PlayerControlButton
-                android:id="@+id/player_mode"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1" />
+            <FrameLayout
+                android:id="@+id/player_controls_cluster"
+                android:layout_width="480dp"
+                android:layout_height="64dp"
+                android:layout_gravity="center">
 
-            <com.feiniu.carmusic.ui.PlayerControlButton
-                android:id="@+id/player_previous"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1" />
+                <LinearLayout
+                    android:id="@+id/player_primary_controls"
+                    android:layout_width="320dp"
+                    android:layout_height="match_parent"
+                    android:layout_gravity="center"
+                    android:background="@drawable/bg_player_control_dock"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
 
-            <com.feiniu.carmusic.ui.PlayerControlButton
-                android:id="@+id/player_toggle"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1" />
+                    <com.feiniu.carmusic.ui.PlayerControlButton
+                        android:id="@+id/player_mode"
+                        android:layout_width="56dp"
+                        android:layout_height="match_parent" />
 
-            <com.feiniu.carmusic.ui.PlayerControlButton
-                android:id="@+id/player_next"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1" />
+                    <com.feiniu.carmusic.ui.PlayerControlButton
+                        android:id="@+id/player_previous"
+                        android:layout_width="64dp"
+                        android:layout_height="match_parent" />
 
-            <com.feiniu.carmusic.ui.PlayerControlButton
-                android:id="@+id/player_favorite"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1" />
+                    <com.feiniu.carmusic.ui.PlayerControlButton
+                        android:id="@+id/player_toggle"
+                        android:layout_width="80dp"
+                        android:layout_height="match_parent" />
 
-            <com.feiniu.carmusic.ui.PlayerControlButton
-                android:id="@+id/player_queue"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1" />
-        </LinearLayout>
+                    <com.feiniu.carmusic.ui.PlayerControlButton
+                        android:id="@+id/player_next"
+                        android:layout_width="64dp"
+                        android:layout_height="match_parent" />
+
+                    <com.feiniu.carmusic.ui.PlayerControlButton
+                        android:id="@+id/player_favorite"
+                        android:layout_width="56dp"
+                        android:layout_height="match_parent" />
+                </LinearLayout>
+
+                <com.feiniu.carmusic.ui.PlayerControlButton
+                    android:id="@+id/player_queue"
+                    android:layout_width="56dp"
+                    android:layout_height="match_parent"
+                    android:layout_gravity="right|center_vertical"
+                    android:background="@drawable/bg_player_control_dock" />
+            </FrameLayout>
+        </FrameLayout>
     </LinearLayout>
 </FrameLayout>

@@ -4,6 +4,10 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.text.Layout;
+import android.text.StaticLayout;
+import android.text.TextPaint;
+import android.text.TextUtils;
 import android.os.SystemClock;
 import android.util.AttributeSet;
 import android.view.View;
@@ -12,10 +16,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 public final class PlayerLyricView extends View {
-    private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final TextPaint paint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
     private final ArrayList<TimedLyricLine> lines = new ArrayList<TimedLyricLine>();
-    private final ArrayList<Float> normalSizes = new ArrayList<Float>();
-    private final ArrayList<Float> activeSizes = new ArrayList<Float>();
+    private final ArrayList<StaticLayout> normalLayouts = new ArrayList<StaticLayout>();
+    private final ArrayList<StaticLayout> activeLayouts = new ArrayList<StaticLayout>();
+    private float lineHeight;
     private long basePositionMs;
     private long baseRealtimeMs;
     private boolean playing;
@@ -32,7 +37,6 @@ public final class PlayerLyricView extends View {
     }
 
     private void init() {
-        paint.setTextAlign(Paint.Align.CENTER);
         paint.setStrokeCap(Paint.Cap.ROUND);
     }
 
@@ -46,8 +50,8 @@ public final class PlayerLyricView extends View {
 
     void setError(String message) {
         lines.clear();
-        normalSizes.clear();
-        activeSizes.clear();
+        normalLayouts.clear();
+        activeLayouts.clear();
         emptyText = message == null ? "" : message;
         invalidate();
     }
@@ -62,13 +66,15 @@ public final class PlayerLyricView extends View {
     @Override
     protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
         super.onSizeChanged(width, height, oldWidth, oldHeight);
-        if (width != oldWidth) calculateTextSizes();
+        if (width != oldWidth || height != oldHeight) calculateTextSizes();
     }
+
+    void refreshTextSizes() { calculateTextSizes(); invalidate(); }
 
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        if (lines.isEmpty()) {
+        if (lines.isEmpty() || activeLayouts.size() != lines.size()) {
             drawEmptyText(canvas);
             return;
         }
@@ -87,7 +93,8 @@ public final class PlayerLyricView extends View {
             }
         }
 
-        float lineHeight = Math.max(dp(34f), Math.min(dp(58f), getHeight() / 4f));
+        // Keep both lines of the active lyric visible when there is only room for one lyric block.
+        if (getHeight() < lineHeight * 2) progress = 0f;
         float center = getHeight() / 2f - progress * lineHeight;
         int first = Math.max(0, active - 6);
         int last = Math.min(lines.size() - 1, active + 7);
@@ -95,10 +102,12 @@ public final class PlayerLyricView extends View {
             float y = center + (i - active) * lineHeight;
             if (y < -lineHeight || y > getHeight() + lineHeight) continue;
             boolean current = i == active;
-            paint.setColor(current ? Color.rgb(242, 238, 245) : Color.rgb(135, 130, 145));
-            paint.setTextSize(current ? activeSizes.get(i) : normalSizes.get(i));
-            paint.setFakeBoldText(current);
-            canvas.drawText(lines.get(i).text, getWidth() / 2f, y, paint);
+            StaticLayout layout = current ? activeLayouts.get(i) : normalLayouts.get(i);
+            layout.getPaint().setColor(current ? Color.rgb(242, 238, 245) : Color.rgb(181, 175, 191));
+            int save = canvas.save();
+            canvas.translate((getWidth() - layout.getWidth()) / 2f, y - layout.getHeight() / 2f);
+            layout.draw(canvas);
+            canvas.restoreToCount(save);
         }
         paint.setFakeBoldText(false);
         if (playing && getWindowToken() != null) postInvalidateDelayed(16L);
@@ -106,11 +115,13 @@ public final class PlayerLyricView extends View {
 
     private void drawEmptyText(Canvas canvas) {
         paint.setColor(Color.rgb(170, 165, 180));
-        paint.setTextSize(sp(18f));
+        paint.setTextSize(sp(getHeight() < dp(200) ? 15f : 18f));
         paint.setFakeBoldText(false);
-        Paint.FontMetrics metrics = paint.getFontMetrics();
-        float baseline = getHeight() / 2f - (metrics.ascent + metrics.descent) / 2f;
-        canvas.drawText(emptyText, getWidth() / 2f, baseline, paint);
+        StaticLayout layout = layout(emptyText, new TextPaint(paint), Math.max(1, getWidth() - (int) dp(24)));
+        int save = canvas.save();
+        canvas.translate((getWidth() - layout.getWidth()) / 2f, (getHeight() - layout.getHeight()) / 2f);
+        layout.draw(canvas);
+        canvas.restoreToCount(save);
     }
 
     private int findActiveLine(long positionMs) {
@@ -130,26 +141,39 @@ public final class PlayerLyricView extends View {
     }
 
     private void calculateTextSizes() {
-        normalSizes.clear();
-        activeSizes.clear();
+        normalLayouts.clear();
+        activeLayouts.clear();
         if (getWidth() <= 0) return;
-        float available = Math.max(1f, getWidth() - dp(32f));
+        int available = Math.max(1, getWidth() - (int) dp(24f));
+        boolean compact = getHeight() < dp(200);
+        lineHeight = Math.max(dp(36f), Math.min(dp(60f), getHeight() / 4f));
         for (TimedLyricLine line : lines) {
-            normalSizes.add(fittedSize(line.text, 20f, false, available));
-            activeSizes.add(fittedSize(line.text, 26f, true, available));
+            TextPaint normal = new TextPaint(paint);
+            normal.setTextSize(sp(compact ? 16f : 20f));
+            normal.setFakeBoldText(false);
+            TextPaint active = new TextPaint(paint);
+            active.setTextSize(sp(compact ? 21f : 26f));
+            active.setFakeBoldText(true);
+            StaticLayout normalLayout = layout(line.text, normal, available);
+            StaticLayout activeLayout = layout(line.text, active, available);
+            normalLayouts.add(normalLayout);
+            activeLayouts.add(activeLayout);
+            lineHeight = Math.max(lineHeight, Math.max(normalLayout.getHeight(), activeLayout.getHeight()) + dp(14));
         }
-        paint.setFakeBoldText(false);
     }
 
-    private float fittedSize(String text, float startSp, boolean bold, float available) {
-        float size = startSp;
-        paint.setFakeBoldText(bold);
-        paint.setTextSize(sp(size));
-        while (paint.measureText(text) > available && size > 14f) {
-            size -= 1f;
-            paint.setTextSize(sp(size));
+    /** Keep long lyrics readable, wrapping up to two lines instead of shrinking them to tiny text. */
+    private StaticLayout layout(String text, TextPaint textPaint, int available) {
+        StaticLayout result = new StaticLayout(text, textPaint, available, Layout.Alignment.ALIGN_CENTER, 1f, 0f, false);
+        if (result.getLineCount() > 2) {
+            int firstEnd = result.getLineEnd(0);
+            String first = text.substring(0, firstEnd).trim();
+            String rest = text.substring(firstEnd).replace('\n', ' ').trim();
+            CharSequence second = TextUtils.ellipsize(rest, textPaint, available, TextUtils.TruncateAt.END);
+            result = new StaticLayout(first + "\n" + second, textPaint, available,
+                    Layout.Alignment.ALIGN_CENTER, 1f, 0f, false);
         }
-        return paint.getTextSize();
+        return result;
     }
 
     private float dp(float value) {
@@ -157,6 +181,6 @@ public final class PlayerLyricView extends View {
     }
 
     private float sp(float value) {
-        return value * getResources().getDisplayMetrics().scaledDensity;
+        return value * getResources().getDisplayMetrics().scaledDensity * UiAppearance.multiplier(getContext());
     }
 }

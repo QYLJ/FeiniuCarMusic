@@ -13,10 +13,12 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.util.Log;
 
 import com.feiniu.carmusic.R;
 import com.feiniu.carmusic.data.HistoryStore;
+import com.feiniu.carmusic.diagnostics.AppLog;
 import com.feiniu.carmusic.model.Track;
 import com.feiniu.carmusic.ui.PlayerActivity;
 
@@ -64,6 +66,10 @@ public final class PlaybackService extends Service implements
     private AudioManager audioManager;
     private Object audioFocusRequest;
     private int lastFocusResult;
+    private int focusState;
+    private boolean focusRequestActive;
+    private final List<String> audioEvents = new ArrayList<String>();
+    private final long audioEventsStartedAt = SystemClock.elapsedRealtime();
     private MediaControlSession mediaControlSession;
     private int currentIndex = -1;
     private int playMode = MODE_SEQUENCE;
@@ -182,6 +188,10 @@ public final class PlaybackService extends Service implements
 
     public void play() {
         if (currentIndex < 0 || currentIndex >= queue.size()) return;
+        recordAudioEvent("收到播放指令");
+        resumeOnFocusGain = false;
+        // An explicit play action may request focus again; automatic resume uses the existing grant.
+        if (focusState == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) focusState = 0;
         ensureStartedService();
         playWhenPrepared = true;
         if (loading) {
@@ -194,16 +204,21 @@ public final class PlaybackService extends Service implements
             return;
         }
         if (requestAudioFocus()) {
-            player.start();
-            errorMessage = "";
-            updatePlaybackState();
-            showNotification();
-            handler.removeCallbacks(persistProgress);
-            handler.postDelayed(persistProgress, 5000L);
+            startPreparedPlayback();
         }
     }
 
+    private void startPreparedPlayback() {
+        player.start();
+        errorMessage = "";
+        updatePlaybackState();
+        showNotification();
+        handler.removeCallbacks(persistProgress);
+        handler.postDelayed(persistProgress, 5000L);
+    }
+
     public void pause() {
+        recordAudioEvent("收到暂停指令（界面或媒体控制）");
         resumeOnFocusGain = false;
         pauseInternal(true);
     }
@@ -276,7 +291,7 @@ public final class PlaybackService extends Service implements
         getSharedPreferences("playback_settings", MODE_PRIVATE).edit().putInt("mp3_bitrate", value).apply();
         Track current = currentIndex >= 0 && currentIndex < queue.size() ? queue.get(currentIndex) : null;
         if (current != null && (fallbackToMp3 || "mp3".equals(AudioCompatibility.transcodeCodec(current, audioMode, Build.VERSION.SDK_INT)))) {
-            boolean resume = isPlaying() || (loading && playWhenPrepared);
+            boolean resume = hasPlaybackIntent();
             pendingSeekMs = getPositionMs();
             prepareCurrent(resume);
         }
@@ -284,7 +299,7 @@ public final class PlaybackService extends Service implements
 
     public void setAudioMode(int mode) {
         if (mode < 0 || mode > AudioCompatibility.NAS_FLAC || mode == audioMode) return;
-        boolean resume = isPlaying() || (loading && playWhenPrepared);
+        boolean resume = hasPlaybackIntent();
         pendingSeekMs = getPositionMs();
         audioMode = mode;
         fallbackToMp3 = false;
@@ -303,10 +318,12 @@ public final class PlaybackService extends Service implements
                         + (current.channels > 0 ? " / " + current.channels + "声道" : "")) + "\n"
                 + "媒体音量：" + audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
                 + " / " + audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC) + "\n"
-                + "音频焦点：" + (lastFocusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED ? "已获得" : "未获得") + "\n"
+                + "音频焦点：" + audioFocusStatus() + "\n"
+                + "等待自动恢复：" + (resumeOnFocusGain ? "是" : "否") + "\n"
                 + "音频缓存：" + (progressiveAudio == null ? "完整文件模式"
                         : progressiveAudio.isComplete() ? "下载已完成" : "边下载边播放，缓冲 " + progressiveAudio.availableBytes() / 1024 + " KB") + "\n"
-                + "蓝牙媒体通道：" + (audioManager.isBluetoothA2dpOn() ? "系统报告已启用" : "系统未报告启用") + "\n\n"
+                + "蓝牙媒体通道：" + (audioManager.isBluetoothA2dpOn() ? "系统报告已启用" : "系统未报告启用") + "\n"
+                + "最近音频事件（服务启动后秒数）：\n" + recentAudioEvents() + "\n"
                 + "若进度正常但听不到声音，可检查媒体音量、车机音源和蓝牙输出，或切换 NAS MP3 再试。";
     }
 
@@ -328,7 +345,7 @@ public final class PlaybackService extends Service implements
         if (progressiveAudio != null) {
             // Unknown-length MP3/FLAC is not seekable on some native players.
             // Retain the current download and reopen its completed file for a reliable seek.
-            boolean resume = isPlaying() || (loading && playWhenPrepared);
+            boolean resume = hasPlaybackIntent();
             pendingSeekMs = Math.max(0, Math.min(positionMs, getDurationMs()));
             closeProgressiveAudio();
             player.reset();
@@ -357,7 +374,8 @@ public final class PlaybackService extends Service implements
         Track current = currentIndex >= 0 && currentIndex < queue.size() ? queue.get(currentIndex) : null;
         return new PlaybackState(current, isPlaying(), loading, getPositionMs(), getDurationMs(),
                 errorMessage, playMode, currentIndex, queue.size(), audioDescription,
-                audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) == 0 ? "系统媒体音量为 0" : "");
+                audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) == 0 ? "系统媒体音量为 0"
+                        : resumeOnFocusGain ? "已临时暂停，等待其他音频结束" : "");
     }
 
     public void clearQueueAndStop() {
@@ -374,6 +392,7 @@ public final class PlaybackService extends Service implements
         prepared = true;
         loading = false;
         Log.i(TAG, "Prepared stream in " + (System.currentTimeMillis() - prepareStartedAtMs) + " ms");
+        recordAudioEvent("播放器就绪 · " + (System.currentTimeMillis() - prepareStartedAtMs) + " ms");
         if (pendingSeekMs > 0) mediaPlayer.seekTo(pendingSeekMs);
         pendingSeekMs = 0;
         if (playWhenPrepared && requestAudioFocus()) mediaPlayer.start();
@@ -399,12 +418,15 @@ public final class PlaybackService extends Service implements
 
     @Override
     public boolean onError(MediaPlayer mediaPlayer, int what, int extra) {
+        AppLog.warn("playback.media_error", "what=" + what + " extra=" + extra);
         if (retryWithNasMp3()) return true;
         if (loadTask != null) loadTask.cancel(true);
         closeProgressiveAudio();
         player.reset();
         prepared = false;
         loading = false;
+        resumeOnFocusGain = false;
+        playWhenPrepared = false;
         errorMessage = "当前系统无法播放此音频（" + what + "/" + extra + "），可点击音质切换 NAS 转码";
         updatePlaybackState();
         showNotification();
@@ -416,29 +438,71 @@ public final class PlaybackService extends Service implements
         if (progressiveAudio != null && progressiveAudio.hasFailure()) return false;
         pendingSeekMs = getPositionMs();
         fallbackToMp3 = true;
-        prepareCurrent(playWhenPrepared);
+        prepareCurrent(playWhenPrepared || resumeOnFocusGain);
         return true;
     }
 
     @Override
     public void onAudioFocusChange(int focusChange) {
+        recordAudioEvent(focusChangeLabel(focusChange));
         if (focusChange == AudioManager.AUDIOFOCUS_LOSS) {
             resumeOnFocusGain = false;
             pauseInternal(false);
             abandonAudioFocus();
         } else if (focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
-            resumeOnFocusGain = isPlaying() || (loading && playWhenPrepared);
+            // Navigation/firmware may report the same loss more than once after playback has paused.
+            resumeOnFocusGain = hasPlaybackIntent();
+            focusState = AudioManager.AUDIOFOCUS_LOSS_TRANSIENT;
             pauseInternal(false);
         } else if (focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) {
+            // A duck callback cannot release a previous, stricter transient pause (for example a call).
+            if (focusState != AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) focusState = focusChange;
             if (player != null) player.setVolume(0.25f, 0.25f);
         } else if (focusChange == AudioManager.AUDIOFOCUS_GAIN) {
+            // Ignore a queued gain after a manual pause/stop or permanent loss abandoned the request.
+            if (!focusRequestActive && !resumeOnFocusGain) return;
+            focusRequestActive = true;
+            focusState = AudioManager.AUDIOFOCUS_GAIN;
+            lastFocusResult = AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
             if (player != null) player.setVolume(1.0f, 1.0f);
             if (resumeOnFocusGain) {
                 resumeOnFocusGain = false;
                 playWhenPrepared = true;
-                if (prepared) play();
+                if (prepared) startPreparedPlayback();
             }
         }
+    }
+
+    private boolean hasPlaybackIntent() {
+        return resumeOnFocusGain || isPlaying() || (loading && playWhenPrepared);
+    }
+
+    private String audioFocusStatus() {
+        if (focusState == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT && (focusRequestActive || resumeOnFocusGain))
+            return "暂时失焦，等待归还";
+        if (focusRequestActive && focusState == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) return "允许混音，音乐音量 25%";
+        return focusRequestActive && lastFocusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED ? "已获得" : "未持有";
+    }
+
+    private static String focusChangeLabel(int value) {
+        if (value == AudioManager.AUDIOFOCUS_LOSS) return "永久失焦 (-1)";
+        if (value == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) return "临时失焦 (-2)";
+        if (value == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) return "允许降低音量混音 (-3)";
+        if (value == AudioManager.AUDIOFOCUS_GAIN) return "焦点归还 (+1)";
+        return "焦点事件 (" + value + ")";
+    }
+
+    private void recordAudioEvent(String event) {
+        if (audioEvents.size() >= 24) audioEvents.remove(0);
+        audioEvents.add((SystemClock.elapsedRealtime() - audioEventsStartedAt) / 1000 + "s · " + event);
+        Log.i(TAG, "Audio: " + event);
+        AppLog.info("playback.audio", event);
+    }
+
+    private String recentAudioEvents() {
+        StringBuilder text = new StringBuilder();
+        for (String event : audioEvents) text.append(event).append('\n');
+        return text.length() == 0 ? "暂无\n" : text.toString();
     }
 
     private void prepareCurrent(boolean autoPlay) {
@@ -453,12 +517,20 @@ public final class PlaybackService extends Service implements
         loading = false;
         final Track track = queue.get(currentIndex);
         if (track.accessStatus == 3) {
+            resumeOnFocusGain = false;
+            playWhenPrepared = false;
             errorMessage = "该歌曲文件已失效";
             updatePlaybackState();
             return;
         }
         ensureStartedService();
-        playWhenPrepared = autoPlay;
+        if (focusState == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
+            resumeOnFocusGain = autoPlay;
+            playWhenPrepared = false;
+        } else {
+            resumeOnFocusGain = false;
+            playWhenPrepared = autoPlay;
+        }
         prepared = false;
         loading = true;
         errorMessage = "";
@@ -474,28 +546,41 @@ public final class PlaybackService extends Service implements
         prepareStartedAtMs = System.currentTimeMillis();
         final int requestedBitrate = mp3BitrateKbps;
         final boolean streamPlayback = Build.VERSION.SDK_INT >= 23 && pendingSeekMs <= 0;
+        recordAudioEvent(streamPlayback ? "开始准备音频：渐进播放"
+                : "开始准备音频：完整文件模式（" + (pendingSeekMs > 0 ? "恢复播放位置" : "Android " + Build.VERSION.SDK_INT) + "）");
         loadTask = trackLoader.submit(new Runnable() {
             @Override
             public void run() {
                 try {
-                    final AudioFile audio = trackCache.getOrDownload(track, transcodeCodec, requestedBitrate,
+                    trackCache.getOrDownload(track, transcodeCodec, requestedBitrate,
                             !streamPlayback ? null : new TrackFileCache.ReadyListener() {
                                 @Override public void onReady(final ProgressiveAudioFile stream) {
                                     handler.post(new Runnable() {
                                         @Override public void run() { openAudio(generation, stream.audio, stream); }
                                     });
                                 }
+                            }, new NasTranscodeDownloader.StageListener() {
+                                @Override public void onStage(final String stage) {
+                                    handler.post(new Runnable() {
+                                        @Override public void run() {
+                                            if (generation == loadGeneration) recordAudioEvent(stage);
+                                        }
+                                    });
+                                }
+                            }, new TrackFileCache.CompleteListener() {
+                                @Override public void onComplete(final AudioFile audio) {
+                                    handler.post(new Runnable() {
+                                        @Override public void run() {
+                                            if (generation != loadGeneration) return;
+                                            downloadedAudio = audio;
+                                            if (!streamPlayback || waitingForSeek) {
+                                                waitingForSeek = false;
+                                                openAudio(generation, audio, null);
+                                            }
+                                        }
+                                    });
+                                }
                             });
-                    handler.post(new Runnable() {
-                        @Override public void run() {
-                            if (generation != loadGeneration) return;
-                            downloadedAudio = audio;
-                            if (!streamPlayback || waitingForSeek) {
-                                waitingForSeek = false;
-                                openAudio(generation, audio, null);
-                            }
-                        }
-                    });
                 } catch (final Exception error) {
                     handler.post(new Runnable() {
                         @Override
@@ -515,9 +600,10 @@ public final class PlaybackService extends Service implements
         }
         FileInputStream input = null;
         try {
+            recordAudioEvent("交给播放器 · " + (System.currentTimeMillis() - prepareStartedAtMs) + " ms");
             audioDescription = audio.description();
             progressiveAudio = stream;
-            player.setAudioStreamType(AudioManager.STREAM_MUSIC);
+            configurePlayerAudio();
             player.setWakeMode(getApplicationContext(), PowerManager.PARTIAL_WAKE_LOCK);
             if (stream != null) AudioDataSourceApi23.set(player, stream);
             else {
@@ -541,24 +627,43 @@ public final class PlaybackService extends Service implements
 
     private void failCurrentLoad(int generation, Exception error) {
         if (generation != loadGeneration) return;
+        recordAudioEvent("播放准备失败：" + error.getMessage());
         loading = false;
         prepared = false;
+        resumeOnFocusGain = false;
+        playWhenPrepared = false;
         closeProgressiveAudio();
         if (player != null) player.reset();
         errorMessage = "无法打开音频：" + safeMessage(error);
         Log.e(TAG, errorMessage, error);
+        AppLog.error("playback.prepare_failed", error);
         updatePlaybackState();
         showNotification();
     }
 
     private void createPlayer() {
         player = new MediaPlayer();
+        configurePlayerAudio();
         player.setOnPreparedListener(this);
         player.setOnCompletionListener(this);
         player.setOnErrorListener(this);
     }
 
+    private void configurePlayerAudio() {
+        if (Build.VERSION.SDK_INT >= 21) MediaPlayerAudioApi21.configure(player);
+        else player.setAudioStreamType(AudioManager.STREAM_MUSIC);
+    }
+
     private boolean requestAudioFocus() {
+        if (focusState == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) return false;
+        if (focusRequestActive && (focusState == AudioManager.AUDIOFOCUS_GAIN
+                || focusState == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK)) {
+            if (player != null) {
+                float volume = focusState == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK ? .25f : 1f;
+                player.setVolume(volume, volume);
+            }
+            return true;
+        }
         showNotification();
         if (Build.VERSION.SDK_INT >= 26) {
             if (audioFocusRequest == null) audioFocusRequest = AudioFocusApi26.create(this);
@@ -568,6 +673,9 @@ public final class PlaybackService extends Service implements
                     AudioManager.AUDIOFOCUS_GAIN);
         }
         boolean granted = lastFocusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+        focusRequestActive = granted;
+        focusState = granted ? AudioManager.AUDIOFOCUS_GAIN : 0;
+        recordAudioEvent(granted ? "申请焦点成功" : "申请焦点被拒绝");
         if (granted && player != null) player.setVolume(1.0f, 1.0f);
         if (!granted) errorMessage = "未获得媒体音频焦点，请结束其他音频或通话后再试";
         return granted;
@@ -579,6 +687,8 @@ public final class PlaybackService extends Service implements
             else audioManager.abandonAudioFocus(this);
         }
         lastFocusResult = 0;
+        focusState = 0;
+        focusRequestActive = false;
     }
 
     private boolean isPlaying() {
@@ -607,6 +717,9 @@ public final class PlaybackService extends Service implements
     }
 
     private void stopPlayback() {
+        recordAudioEvent("停止播放");
+        resumeOnFocusGain = false;
+        playWhenPrepared = false;
         int stoppedAt = getPositionMs();
         loadGeneration++;
         if (loadTask != null) loadTask.cancel(true);

@@ -63,6 +63,12 @@ final class TrackAdapter extends BaseAdapter {
         }
 
         final Track track = getItem(position);
+        UiAppearance.apply(convertView);
+        float density = convertView.getResources().getDisplayMetrics().density;
+        ViewGroup.LayoutParams row = convertView.getLayoutParams();
+        row.height = Math.max(Math.round(54 * density), Math.round(holder.title.getLineHeight()
+                + holder.subtitle.getLineHeight() + 12 * density));
+        convertView.setLayoutParams(row);
         holder.title.setText(track.title.length() == 0 ? "未知歌曲" : track.title);
         String subtitle = track.artist;
         if (track.album.length() > 0) subtitle += (subtitle.length() == 0 ? "" : " · ") + track.album;

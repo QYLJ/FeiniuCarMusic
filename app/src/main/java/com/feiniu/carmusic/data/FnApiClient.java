@@ -25,6 +25,7 @@ import java.io.InputStreamReader;
 import java.io.InterruptedIOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.security.MessageDigest;
@@ -334,6 +335,14 @@ public final class FnApiClient {
 
     /** Authenticated HLS resources stay on the configured NAS origin; never export its cookie. */
     public byte[] readMusicResource(String resourceUrl, int limit) throws Exception {
+        return readMusicResource(resourceUrl, limit, 15000);
+    }
+
+    public byte[] readMusicResource(String resourceUrl, int limit, int timeoutMs) throws Exception {
+        return readMusicResource(resourceUrl, limit, timeoutMs, timeoutMs);
+    }
+
+    public byte[] readMusicResource(String resourceUrl, int limit, int timeoutMs, long budgetMs) throws Exception {
         URL base = new URL(session.getBaseUrl());
         URL url = new URL(resourceUrl);
         if (!base.getProtocol().equalsIgnoreCase(url.getProtocol())
@@ -344,16 +353,20 @@ public final class FnApiClient {
         }
         HttpURLConnection connection = openConnection(url, "GET", true);
         connection.setInstanceFollowRedirects(false);
-        connection.setReadTimeout(15000);
+        connection.setConnectTimeout(Math.max(1, Math.min(8000, timeoutMs)));
+        connection.setReadTimeout(Math.max(1, timeoutMs));
         connection.setRequestProperty("Accept", "*/*");
         connection.setRequestProperty("Accept-Encoding", "identity");
+        boolean consumed = false;
+        final long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(1L, budgetMs));
         try {
             int status = connection.getResponseCode();
             if (status == 401) {
                 session.clearToken();
                 throw new ApiException("登录已失效，请重新登录", status);
             }
-            if (status != 200) throw new ApiException("读取转码分片失败：HTTP " + status, status);
+            if (status == 403) throw new ApiException("没有权限读取转码资源：HTTP 403", status);
+            if (status != 200) throw new ApiException("读取转码资源失败：HTTP " + status, status);
             long length = contentLength(connection);
             if (length > limit) throw new ApiException("转码分片超出大小限制");
             InputStream input = connection.getInputStream();
@@ -361,15 +374,25 @@ public final class FnApiClient {
                 ByteArrayOutputStream output = new ByteArrayOutputStream();
                 byte[] buffer = new byte[8192];
                 int count;
-                while ((count = input.read(buffer)) != -1) {
+                while (true) {
                     if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("下载已取消");
+                    long remainingMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+                    if (remainingMs <= 0L) throw new SocketTimeoutException("读取转码资源超时");
+                    connection.setReadTimeout((int) Math.max(1L, Math.min(timeoutMs, remainingMs)));
+                    count = input.read(buffer);
+                    if (count == -1) break;
                     if (output.size() + count > limit) throw new ApiException("转码分片超出大小限制");
                     output.write(buffer, 0, count);
                 }
                 if (length >= 0 && output.size() != length) throw new IOException("转码分片响应提前结束");
+                consumed = true;
                 return output.toByteArray();
             } finally { input.close(); }
-        } finally { connection.disconnect(); }
+        } finally {
+            // Close the drained body and leave its socket available for the next HLS request.
+            // Reserve disconnect() for incomplete responses across platform implementations.
+            if (!consumed) connection.disconnect();
+        }
     }
 
     public String coverUrl(String coverId, int size) {
@@ -383,17 +406,59 @@ public final class FnApiClient {
 
     public Bitmap downloadCover(String coverId, int size) throws IOException {
         if (coverId == null || coverId.length() == 0) return null;
+        IOException failure = null;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("封面加载已取消");
+            try { return readCover(coverId, size); }
+            catch (IOException error) {
+                if (error instanceof InterruptedIOException && !(error instanceof SocketTimeoutException)) throw error;
+                failure = error;
+            }
+        }
+        throw failure;
+    }
+
+    private Bitmap readCover(String coverId, int size) throws IOException {
         HttpURLConnection connection = null;
         InputStream input = null;
+        boolean consumed = false;
         try {
             connection = openConnection(new URL(coverUrl(coverId, size)), "GET", true);
+            connection.setRequestProperty("Accept", "image/*");
+            connection.setRequestProperty("Accept-Encoding", "identity");
             int status = connection.getResponseCode();
             if (status != HttpURLConnection.HTTP_OK) return null;
-            input = new BufferedInputStream(connection.getInputStream());
-            return BitmapFactory.decodeStream(input);
+            int limit = 8 * 1024 * 1024;
+            long length = contentLength(connection);
+            if (length > limit) throw new IOException("封面图片超出大小限制");
+            input = connection.getInputStream();
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("封面加载已取消");
+                if (bytes.size() + count > limit) throw new IOException("封面图片超出大小限制");
+                bytes.write(buffer, 0, count);
+            }
+            if (length >= 0 && bytes.size() != length) throw new IOException("封面图片响应提前结束");
+            consumed = true;
+            // Some platform decoders accept a truncated network stream as a partial image.
+            // Validate the complete response before decoding or caching it.
+            byte[] image = bytes.toByteArray();
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inJustDecodeBounds = true;
+            BitmapFactory.decodeByteArray(image, 0, image.length, options);
+            if (options.outWidth <= 0 || options.outHeight <= 0) throw new IOException("封面图片无效");
+            int largest = Math.max(options.outWidth, options.outHeight);
+            options.inSampleSize = 1;
+            while (largest / (options.inSampleSize * 2) >= Math.max(32, size)) options.inSampleSize *= 2;
+            options.inJustDecodeBounds = false;
+            Bitmap result = BitmapFactory.decodeByteArray(image, 0, image.length, options);
+            if (result == null) throw new IOException("封面图片无法解码");
+            return result;
         } finally {
             if (input != null) try { input.close(); } catch (IOException ignored) { }
-            if (connection != null) connection.disconnect();
+            if (connection != null && !consumed) connection.disconnect();
         }
     }
 
@@ -429,6 +494,7 @@ public final class FnApiClient {
                 }
                 if (status != HttpURLConnection.HTTP_OK
                         && status != HttpURLConnection.HTTP_PARTIAL) {
+                    if (status == 404) throw new ApiException("原始音频不存在或访问路径不可用（HTTP 404），请刷新曲库并检查音乐服务地址", status);
                     throw new ApiException("下载音频失败：HTTP " + status, status);
                 }
 
@@ -547,6 +613,7 @@ public final class FnApiClient {
         if (baseUrl == null || baseUrl.length() == 0) throw new ApiException("尚未连接飞牛服务器");
         URL url = new URL(baseUrl + API_PREFIX + path);
         HttpURLConnection connection = null;
+        boolean consumed = false;
         try {
             connection = openConnection(url, method, auth);
             connection.setReadTimeout(timeout);
@@ -568,6 +635,7 @@ public final class FnApiClient {
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream() : connection.getErrorStream();
             String responseBody = stream == null ? "" : readText(stream);
+            consumed = status >= 200 && status < 300;
             if (status == HttpURLConnection.HTTP_UNAUTHORIZED
                     || status == HttpURLConnection.HTTP_FORBIDDEN) {
                 if (auth) {
@@ -585,15 +653,19 @@ public final class FnApiClient {
                 throw new ApiException("登录接口跳转到其他页面，请填写可直接访问飞牛音乐的地址", status);
             }
             if (status < 200 || status >= 300) {
+                if (status == 404 && "/track/transcode".equals(path))
+                    throw new ApiException("NAS 转码接口返回 HTTP 404，请检查音乐服务版本和访问地址的转码接口转发", status);
                 throw new ApiException("服务器返回 HTTP " + status, status);
             }
             return new Response(status, responseBody);
         } catch (ApiException error) {
             throw error;
         } catch (IOException error) {
-            throw new ApiException("无法连接服务器：" + safeMessage(error));
+            ApiException failure = new ApiException("无法连接服务器：" + safeMessage(error));
+            failure.initCause(error);
+            throw failure;
         } finally {
-            if (connection != null) connection.disconnect();
+            if (connection != null && !consumed) connection.disconnect();
         }
     }
 
@@ -609,7 +681,6 @@ public final class FnApiClient {
         connection.setRequestProperty("Accept", "application/json");
         connection.setRequestProperty("User-Agent", "FeiniuCarMusic/0.3.6 Android");
         connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-        connection.setRequestProperty("Connection", "close");
         String cookies = relaySession.cookieHeader(url);
         if (auth && session.getToken().length() > 0) {
             if (cookies.length() > 0) cookies += "; ";

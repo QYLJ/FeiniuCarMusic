@@ -11,7 +11,6 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.view.KeyEvent;
-import android.util.TypedValue;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
@@ -23,6 +22,8 @@ import android.widget.EditText;
 import android.widget.GridView;
 import android.widget.ImageView;
 import android.widget.ListView;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -30,6 +31,8 @@ import com.feiniu.carmusic.R;
 import com.feiniu.carmusic.data.CoverLoader;
 import com.feiniu.carmusic.data.FnApiClient;
 import com.feiniu.carmusic.data.HistoryStore;
+import com.feiniu.carmusic.data.UiPreferences;
+import com.feiniu.carmusic.diagnostics.AppLog;
 import com.feiniu.carmusic.model.MediaCollection;
 import com.feiniu.carmusic.model.MediaCollectionPage;
 import com.feiniu.carmusic.model.Track;
@@ -47,6 +50,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public final class LibraryActivity extends Activity {
+    private static final int[] NAV_IDS = {R.id.nav_home, R.id.nav_favorites, R.id.nav_recent, R.id.nav_albums,
+            R.id.nav_artists, R.id.nav_genres, R.id.nav_library, R.id.nav_playlists};
     private static final int PAGE_SIZE = 500;
     private static final int SOURCE_HOME = 0;
     private static final int SOURCE_LIBRARY = 1;
@@ -58,6 +63,14 @@ public final class LibraryActivity extends Activity {
     private final List<Track> tracks = new ArrayList<Track>();
     private final Set<String> loadedTrackGuids = new HashSet<String>();
     private final List<MediaCollection> collections = new ArrayList<MediaCollection>();
+    private final List<MediaCollection> playlists = new ArrayList<MediaCollection>();
+    private final Set<String> playlistGuids = new HashSet<String>();
+    private SidebarPlaylistAdapter playlistAdapter;
+    private ListView playlistList;
+    private TextView playlistStatus;
+    private boolean playlistsLoading, playlistsLoaded;
+    private int playlistNextPage = 1;
+    private String selectedPlaylistGuid = "";
     private final ExecutorService executor = Executors.newFixedThreadPool(3);
     private final Handler main = new Handler(Looper.getMainLooper());
 
@@ -153,6 +166,24 @@ public final class LibraryActivity extends Activity {
         playAllButton = (Button) findViewById(R.id.play_all_button);
         trackList = (ListView) findViewById(R.id.track_list);
         collectionGrid = (GridView) findViewById(R.id.collection_grid);
+        playlistList = (ListView) findViewById(R.id.sidebar_playlist_list);
+        playlistStatus = (TextView) findViewById(R.id.sidebar_playlist_status);
+        playlistAdapter = new SidebarPlaylistAdapter(this, playlists);
+        playlistList.setAdapter(playlistAdapter);
+        playlistList.setOnItemClickListener(new AdapterView.OnItemClickListener() {
+            @Override public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
+                openCollectionDetail(playlists.get(position));
+            }
+        });
+        playlistList.setOnScrollListener(new AbsListView.OnScrollListener() {
+            @Override public void onScrollStateChanged(AbsListView view, int state) { }
+            @Override public void onScroll(AbsListView view, int first, int visible, int total) {
+                if (total > 0 && first + visible >= total - 3) loadPlaylists();
+            }
+        });
+        playlistStatus.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) { loadPlaylists(); }
+        });
 
         homeHeader = findViewById(R.id.home_header);
         trackContainer = findViewById(R.id.track_container);
@@ -183,33 +214,69 @@ public final class LibraryActivity extends Activity {
 
         bindNavigation();
         bindContentActions();
-        openHome();
+        boolean[] visible = new UiPreferences(this).visibleNavigation();
+        for (int i = 0; i < NAV_IDS.length; i++) if (visible[i]) {
+            findViewById(NAV_IDS[i]).performClick();
+            break;
+        }
+        UiAppearance.apply(root);
     }
 
     private void applyLibraryLayout() {
+        if (layoutWidth <= 0 || layoutHeight <= 0) return;
         float density = getResources().getDisplayMetrics().density;
+        float textScale = UiAppearance.textScale(this);
         float width = layoutWidth / density;
         boolean compact = layoutHeight / density < 400 || width < 760;
         boolean narrow = width < 580;
-        setWidth(findViewById(R.id.library_sidebar), Math.round((compact ? 116 : 148) * density));
+        UiAppearance.textSize(pageTitle, narrow ? 16 : compact ? 20 : 24);
+        UiAppearance.apply(findViewById(R.id.library_root));
+        int toolbarHeight = Math.max(Math.round((compact ? 52 : 68) * density),
+                pageTitle.getLineHeight() + listStatus.getLineHeight() + Math.round(8 * density));
+        int sectionHeight = Math.max(Math.round((compact ? 28 : 42) * density),
+                ((TextView) findViewById(R.id.home_section_title)).getLineHeight() + Math.round(4 * density));
+        int miniHeight = Math.max(Math.round(56 * density),
+                miniTitle.getLineHeight() + miniArtist.getLineHeight() + Math.round(8 * density));
+        setWidth(findViewById(R.id.library_sidebar), Math.round(Math.max(compact ? 116 : 148,
+                64 + (compact ? 14 : 15) * 4 * textScale) * density));
         int inset = Math.round((compact ? 10 : 20) * density);
         findViewById(R.id.library_content).setPadding(inset, 0, inset, 0);
-        setHeight(findViewById(R.id.library_toolbar), Math.round((compact ? 52 : 68) * density));
-        setHeight(findViewById(R.id.home_cards), Math.round((compact ? 64 : 108) * density));
-        setHeight(findViewById(R.id.home_section_title), Math.round((compact ? 28 : 42) * density));
+        setHeight(findViewById(R.id.library_toolbar), toolbarHeight);
+        View homeCards = findViewById(R.id.home_cards);
+        setHeight(homeCards, Math.round((compact ? 48 : 108) * density));
+        // On short screens reserve at least one readable song row when large fonts are chosen.
+        float otherHeight = (toolbarHeight + sectionHeight + miniHeight) / density + 20;
+        homeCards.setVisibility(layoutHeight / density - otherHeight < 48 + 54 * textScale ? View.GONE : View.VISIBLE);
+        setHeight(findViewById(R.id.home_section_title), sectionHeight);
         homeHeader.setPadding(0, Math.round(4 * density), 0, Math.round((compact ? 4 : 8) * density));
-        int brandHeight = compact ? 40 : 56;
+        int brandHeight = Math.round((compact ? 40 : 56) * Math.max(1, textScale));
         setHeight(findViewById(R.id.sidebar_brand_row), Math.round(brandHeight * density));
-        float navHeight = Math.max(28, Math.min(compact ? 34 : 44, (layoutHeight / density - brandHeight - 4) / 8));
-        setWidth(searchInput, Math.round((narrow ? 82 : compact ? 120 : 190) * density));
-        pageTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, narrow ? 16 : compact ? 20 : 24);
-        int[] navIds = {R.id.nav_home, R.id.nav_favorites, R.id.nav_recent, R.id.nav_albums,
-                R.id.nav_artists, R.id.nav_genres, R.id.nav_library, R.id.nav_playlists};
-        for (int id : navIds) {
+        boolean[] visible = new UiPreferences(this).visibleNavigation();
+        int visibleCount = 0;
+        for (boolean value : visible) if (value) visibleCount++;
+        float navHeight = Math.max(32 * Math.max(1, textScale), Math.min(compact ? 36 : 44,
+                (layoutHeight / density - brandHeight - 4) / Math.max(1, visibleCount)));
+        setWidth(searchInput, Math.round((narrow ? 76 : compact ? 120 : 190) * density));
+        searchInput.setPadding(Math.round(8 * density), 0, Math.round(8 * density), 0);
+        setHeight(searchInput, Math.round(Math.max(40, 32 * textScale) * density));
+        for (int i = 0; i < NAV_IDS.length; i++) {
+            int id = NAV_IDS[i];
             TextView nav = (TextView) findViewById(id);
+            nav.setSingleLine(true);
+            nav.setVisibility(visible[i] ? View.VISIBLE : View.GONE);
             setHeight(nav, Math.round(navHeight * density));
-            nav.setTextSize(TypedValue.COMPLEX_UNIT_SP, compact ? 12 : 14);
+            UiAppearance.textSize(nav, compact ? 14 : 15);
         }
+        boolean expanded = selectedNav != null && selectedNav.getId() == R.id.nav_playlists && visible[7];
+        findViewById(R.id.sidebar_playlists).setVisibility(expanded ? View.VISIBLE : View.GONE);
+        View navigation = findViewById(R.id.sidebar_navigation);
+        LinearLayout.LayoutParams navigationParams = (LinearLayout.LayoutParams) navigation.getLayoutParams();
+        navigationParams.height = expanded ? Math.round(Math.min((brandHeight + navHeight * visibleCount + 4) * density,
+                layoutHeight - Math.min(144 * density, layoutHeight * .4f))) : 0;
+        navigationParams.weight = expanded ? 0 : 1;
+        navigation.setLayoutParams(navigationParams);
+        setHeight(findViewById(R.id.mini_player), miniHeight);
+        UiAppearance.apply(findViewById(R.id.library_root));
     }
 
     private static void setWidth(View view, int width) {
@@ -232,7 +299,7 @@ public final class LibraryActivity extends Activity {
         bindNav(R.id.nav_artists, new View.OnClickListener() { @Override public void onClick(View v) { openCollections(MediaCollection.TYPE_ARTIST, "歌手", v); } });
         bindNav(R.id.nav_genres, new View.OnClickListener() { @Override public void onClick(View v) { openCollections(MediaCollection.TYPE_GENRE, "音乐风格", v); } });
         bindNav(R.id.nav_library, new View.OnClickListener() { @Override public void onClick(View v) { openLibrary(); } });
-        bindNav(R.id.nav_playlists, new View.OnClickListener() { @Override public void onClick(View v) { openCollections(MediaCollection.TYPE_PLAYLIST, "歌单", v); } });
+        bindNav(R.id.nav_playlists, new View.OnClickListener() { @Override public void onClick(View v) { openPlaylists(); } });
 
         findViewById(R.id.logout_button).setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
@@ -242,8 +309,8 @@ public final class LibraryActivity extends Activity {
                 openLogin();
             }
         });
-        findViewById(R.id.update_button).setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { AppUpdater.check(LibraryActivity.this, true); }
+        findViewById(R.id.settings_button).setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { startActivity(new Intent(LibraryActivity.this, SettingsActivity.class)); }
         });
     }
 
@@ -412,6 +479,10 @@ public final class LibraryActivity extends Activity {
     }
 
     private void openCollectionDetail(MediaCollection item) {
+        if (MediaCollection.TYPE_PLAYLIST.equals(item.type)) {
+            selectedPlaylistGuid = item.guid;
+            playlistAdapter.select(item.guid);
+        }
         source = SOURCE_COLLECTION;
         collectionType = item.type;
         collectionGuid = item.guid;
@@ -419,6 +490,81 @@ public final class LibraryActivity extends Activity {
         pageTitle.setText(item.name.length() == 0 ? "未命名分类" : item.name);
         resetTrackSource();
         loadNextPage();
+    }
+
+    private void openPlaylists() {
+        selectNav(findViewById(R.id.nav_playlists));
+        for (MediaCollection item : playlists) if (item.guid.equals(selectedPlaylistGuid)) {
+            openCollectionDetail(item);
+            return;
+        }
+        if (!playlists.isEmpty()) {
+            openCollectionDetail(playlists.get(0));
+            return;
+        }
+        source = SOURCE_COLLECTION;
+        collectionType = MediaCollection.TYPE_PLAYLIST;
+        collectionGuid = "";
+        showTrackView(false);
+        pageTitle.setText("歌单");
+        resetTrackSource();
+        allLoaded = true;
+        playAllButton.setVisibility(View.GONE);
+        listStatus.setText(playlistsLoaded ? "暂无歌单" : "正在加载歌单…");
+        updateEmptyState();
+        loadPlaylists();
+    }
+
+    private boolean showingPlaylists() {
+        return selectedNav != null && selectedNav.getId() == R.id.nav_playlists;
+    }
+
+    private void loadPlaylists() {
+        if (destroyed || playlistsLoading || playlistsLoaded || !showingPlaylists()) return;
+        playlistsLoading = true;
+        playlistStatus.setVisibility(View.VISIBLE);
+        playlistStatus.setText("加载歌单…");
+        final int page = playlistNextPage;
+        executor.execute(new Runnable() {
+            @Override public void run() {
+                try {
+                    final MediaCollectionPage result = api.getCollections(MediaCollection.TYPE_PLAYLIST, page, 100);
+                    main.post(new Runnable() {
+                        @Override public void run() {
+                            if (destroyed) return;
+                            int before = playlists.size();
+                            for (MediaCollection item : result.items) if (playlistGuids.add(item.guid)) playlists.add(item);
+                            playlistsLoading = false;
+                            playlistNextPage++;
+                            playlistsLoaded = result.items.isEmpty() || before == playlists.size()
+                                    || (result.total > 0 ? playlists.size() >= result.total : result.items.size() < 100);
+                            playlistStatus.setText(playlists.isEmpty() ? "暂无歌单" : "更多歌单");
+                            playlistStatus.setVisibility(playlists.isEmpty() || !playlistsLoaded ? View.VISIBLE : View.GONE);
+                            playlistAdapter.notifyDataSetChanged();
+                            if (showingPlaylists() && collectionGuid.length() == 0) {
+                                if (!playlists.isEmpty()) openCollectionDetail(playlists.get(0));
+                                else { listStatus.setText("暂无歌单"); updateEmptyState(); }
+                            }
+                        }
+                    });
+                } catch (final Exception error) {
+                    main.post(new Runnable() {
+                        @Override public void run() {
+                            if (destroyed) return;
+                            playlistsLoading = false;
+                            playlistStatus.setVisibility(View.VISIBLE);
+                            playlistStatus.setText("加载失败 · 点击重试");
+                            if (showingPlaylists() && collectionGuid.length() == 0) {
+                                listStatus.setText("歌单加载失败");
+                                emptyState.setText("点击左侧重试加载歌单");
+                                emptyState.setVisibility(View.VISIBLE);
+                            }
+                            if (!api.session().hasSession()) openLogin();
+                        }
+                    });
+                }
+            }
+        });
     }
 
     private void beginSearch() {
@@ -450,7 +596,8 @@ public final class LibraryActivity extends Activity {
     }
 
     private void loadNextPage() {
-        if (destroyed || loading || allLoaded || source == SOURCE_RECENT || collectionGrid.getVisibility() == View.VISIBLE) return;
+        if (destroyed || loading || allLoaded || source == SOURCE_RECENT || collectionGrid.getVisibility() == View.VISIBLE
+                || source == SOURCE_COLLECTION && collectionGuid.length() == 0) return;
         loading = true;
         final int page = nextPage;
         final int requestedSource = source;
@@ -593,6 +740,12 @@ public final class LibraryActivity extends Activity {
         if (selectedNav != null) selectedNav.setSelected(false);
         selectedNav = nav;
         if (selectedNav != null) selectedNav.setSelected(true);
+        findViewById(R.id.sidebar_playlists).setVisibility(showingPlaylists() ? View.VISIBLE : View.GONE);
+        applyLibraryLayout();
+        if (nav != null && nav.getId() == R.id.nav_playlists) {
+            final ScrollView navigation = (ScrollView) findViewById(R.id.sidebar_navigation);
+            navigation.post(new Runnable() { @Override public void run() { navigation.fullScroll(View.FOCUS_DOWN); } });
+        }
     }
 
     private void updateEmptyState() {
@@ -601,10 +754,13 @@ public final class LibraryActivity extends Activity {
         emptyState.setVisibility(!loading && empty ? View.VISIBLE : View.GONE);
         if (source == SOURCE_RECENT && empty) emptyState.setText("还没有播放记录");
         else if (source == SOURCE_FAVORITES && empty) emptyState.setText("还没有收藏歌曲\n点击歌曲右侧爱心即可收藏");
+        else if (showingPlaylists() && collectionGuid.length() == 0)
+            emptyState.setText(playlistsLoading ? "正在加载歌单…" : "暂无歌单");
         else emptyState.setText("暂无内容");
     }
 
     private void showLoadError(final int generation, final Exception error) {
+        AppLog.error("library.load_failed", error);
         main.post(new Runnable() {
             @Override public void run() {
                 if (destroyed || generation != contentGeneration) return;
@@ -634,6 +790,23 @@ public final class LibraryActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        if (selectedNav != null) {
+            boolean[] visible = new UiPreferences(this).visibleNavigation();
+            for (int i = 0; i < NAV_IDS.length; i++) {
+                if (selectedNav.getId() == NAV_IDS[i] && !visible[i]) {
+                    for (int j = 0; j < NAV_IDS.length; j++) if (visible[j]) {
+                        findViewById(NAV_IDS[j]).performClick();
+                        break;
+                    }
+                    break;
+                }
+            }
+        }
+        UiAppearance.apply(findViewById(R.id.library_root));
+        applyLibraryLayout();
+        if (trackAdapter != null) trackAdapter.notifyDataSetChanged();
+        if (collectionAdapter != null) collectionAdapter.notifyDataSetChanged();
+        if (playlistAdapter != null) playlistAdapter.notifyDataSetChanged();
         if (!isFinishing()) AppUpdater.onResume(this);
     }
 
