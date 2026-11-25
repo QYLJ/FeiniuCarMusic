@@ -22,6 +22,35 @@ public class HlsAudioAssemblerTest {
 
     @Rule public TemporaryFolder temporary = new TemporaryFolder();
 
+    @Test public void realOpusFragmentsBecomeOggEvenWhenNewNasOverridesRequestedCodec() throws Exception {
+        File target = temporary.newFile();
+        try (HlsAudioAssembler assembler = new HlsAudioAssembler(target, "mp3")) {
+            assemble(assembler, "opus");
+            assertEquals("opus", assembler.getCodec()); assertEquals(48000, assembler.getSampleRate());
+            assertEquals(2, assembler.getChannels()); assertEquals(48000, assembler.getTotalSamples());
+        }
+        byte[] audio = Files.readAllBytes(target.toPath());
+        assertEquals("OggS", new String(audio, 0, 4, "US-ASCII"));
+        assertEquals("OpusHead", new String(audio, 28, 8, "US-ASCII"));
+        int offset = 0, sequence = 0;
+        while (offset < audio.length) {
+            int segments = audio[offset + 26] & 255, length = 27 + segments;
+            for (int i = 0; i < segments; i++) length += audio[offset + 27 + i] & 255;
+            assertEquals(sequence++, audio[offset + 18] & 255);
+            if (offset + length == audio.length) assertEquals(4, audio[offset + 5] & 4);
+            offset += length;
+        }
+        assertEquals(audio.length, offset);
+    }
+
+    @Test public void opusRejectsInvalidConfigurationAndPacketTimingAndDeletesFailedCache() throws Exception {
+        byte[] init = fixture("opus-init.mp4");
+        init[findType(init, "dOps") + 4] = 1;
+        expectFailure("opus", init, null);
+        try { OggOpusWriter.packetSamples(new byte[] {3, 0}, 0, 2); fail(); } catch (IOException expected) { }
+        try { OggOpusWriter.packetSamples(new byte[] {3, 63}, 0, 2); fail(); } catch (IOException expected) { }
+    }
+
     @Test public void realFlacFragmentsBecomeNativeFlacWithAccurateStreamInfo() throws Exception {
         File target = temporary.newFile();
         try (HlsAudioAssembler assembler = new HlsAudioAssembler(target, "flac")) {
@@ -55,6 +84,17 @@ public class HlsAudioAssemblerTest {
             assertEquals(192, assembler.getBitrateKbps());
         }
         assertEquals(MP3_SHA, sha256(Files.readAllBytes(target.toPath())));
+    }
+
+    @Test public void newerNasCanSubstituteVerifiedAacForRequestedMp3OrFlac() throws Exception {
+        for (String requested : new String[] {"mp3", "flac"}) {
+            File target = temporary.newFile();
+            try (HlsAudioAssembler assembler = new HlsAudioAssembler(target, requested)) {
+                assemble(assembler, "aac");
+                assertEquals("aac", assembler.getCodec());
+            }
+            assertEquals(AAC_SHA, sha256(Files.readAllBytes(target.toPath())));
+        }
     }
 
     @Test public void realAacAccessUnitsReceiveValidAdtsHeaders() throws Exception {

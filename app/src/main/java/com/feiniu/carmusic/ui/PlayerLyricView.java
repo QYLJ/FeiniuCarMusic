@@ -103,7 +103,7 @@ public final class PlayerLyricView extends View {
             if (y < -lineHeight || y > getHeight() + lineHeight) continue;
             boolean current = i == active;
             StaticLayout layout = current ? activeLayouts.get(i) : normalLayouts.get(i);
-            layout.getPaint().setColor(current ? Color.rgb(242, 238, 245) : Color.rgb(181, 175, 191));
+            layout.getPaint().setColor(getResources().getColor(current ? com.feiniu.carmusic.R.color.text_primary : com.feiniu.carmusic.R.color.text_secondary));
             int save = canvas.save();
             canvas.translate((getWidth() - layout.getWidth()) / 2f, y - layout.getHeight() / 2f);
             layout.draw(canvas);
@@ -114,7 +114,7 @@ public final class PlayerLyricView extends View {
     }
 
     private void drawEmptyText(Canvas canvas) {
-        paint.setColor(Color.rgb(170, 165, 180));
+        paint.setColor(getResources().getColor(com.feiniu.carmusic.R.color.text_muted));
         paint.setTextSize(sp(getHeight() < dp(200) ? 15f : 18f));
         paint.setFakeBoldText(false);
         StaticLayout layout = layout(emptyText, new TextPaint(paint), Math.max(1, getWidth() - (int) dp(24)));

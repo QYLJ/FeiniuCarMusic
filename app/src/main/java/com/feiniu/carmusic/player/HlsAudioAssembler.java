@@ -11,8 +11,8 @@ import java.util.Locale;
 
 /**
  * Extracts a single, unencrypted NAS HLS audio stream into a normal audio file.
- * This is a demuxer, not a decoder: FLAC frames, MPEG Layer III frames and AAC-LC
- * access units retain their original audio. AAC access units receive ADTS headers.
+ * This is a demuxer, not a decoder: FLAC, MP3, AAC-LC and Opus retain their audio.
+ * AAC receives ADTS headers; MP4 Opus packets receive an Ogg Opus container.
  * An incomplete/failed assembly is deleted by close(); only finish() keeps it.
  * Segments must be complete, in order, and from the same rendition/session.
  */
@@ -44,6 +44,9 @@ public final class HlsAudioAssembler implements Closeable {
     private long frameCount;
     private long writtenBytes;
     private byte[] streamInfo;
+    private OggOpusWriter opus;
+    private long opusEndGranule;
+    private boolean opusTrimmed;
     private boolean finished;
     private boolean closed;
     private boolean failed;
@@ -113,7 +116,7 @@ public final class HlsAudioAssembler implements Closeable {
         }
     }
 
-    /** Fixes FLAC STREAMINFO, flushes and closes the completed audio file. */
+    /** Fixes FLAC STREAMINFO / Opus EOS and end trimming, then closes the completed file. */
     public void finish() throws IOException {
         requireOpen();
         try {
@@ -125,6 +128,7 @@ public final class HlsAudioAssembler implements Closeable {
                 output.seek(18); // fLaC (4) + metadata header (4) + STREAMINFO (10)
                 output.writeLong(parameters);
             }
+            if (opus != null) totalSamples = opus.finish(opusEndGranule);
             output.getFD().sync();
             output.close();
             closed = true;
@@ -201,6 +205,15 @@ public final class HlsAudioAssembler implements Closeable {
             readEsds(data, esds.payload + 4, esds.end);
         } else if (".mp3".equals(entry.type) || "mp3 ".equals(entry.type)) {
             selectCodec("mp3");
+        } else if ("Opus".equals(entry.type)) {
+            Box dops = unique(configuration, "dOps", true);
+            selectCodec("opus");
+            byte[] config = Arrays.copyOfRange(data, dops.payload, dops.end);
+            opus = new OggOpusWriter(output, config);
+            channels = config[1] & 255;
+            sampleRate = 48000;
+            bitDepth = 16;
+            writtenBytes = output.length();
         } else {
             throw invalid("不支持的 fMP4 音频编码：" + entry.type);
         }
@@ -342,6 +355,14 @@ public final class HlsAudioAssembler implements Closeable {
                         throw invalid("trun 音频帧引用超出 mdat 范围");
                     }
                     int samples = appendAccessUnit(data, (int) nextOffset, (int) sampleSize);
+                    if (opus != null) {
+                        if (opusTrimmed || sampleDuration * 48000L % timescale != 0)
+                            throw invalid("Opus 分片时长或尾部裁剪无效");
+                        long durationSamples = sampleDuration * 48000L / timescale;
+                        if (durationSamples > samples) throw invalid("Opus 包时长与分片时长不一致");
+                        opusTrimmed = durationSamples < samples;
+                        opusEndGranule += durationSamples;
+                    }
                     if ("flac".equals(codec) && samples * timescale != sampleDuration * sampleRate) {
                         throw invalid("FLAC 帧采样数与分片时长不一致");
                     }
@@ -358,7 +379,13 @@ public final class HlsAudioAssembler implements Closeable {
 
     private int appendAccessUnit(byte[] data, int start, int size) throws IOException {
         int samples;
-        if ("flac".equals(codec)) {
+        if ("opus".equals(codec)) {
+            long before = output.getFilePointer();
+            samples = opus.append(data, start, size);
+            writtenBytes += output.getFilePointer() - before;
+            addSamples(samples);
+            return samples;
+        } else if ("flac".equals(codec)) {
             samples = validateFlacFrame(data, start, start + size);
         } else if ("mp3".equals(codec)) {
             AudioFrame frame = mp3Frame(data, start, start + size);
@@ -601,8 +628,9 @@ public final class HlsAudioAssembler implements Closeable {
     }
 
     private void selectCodec(String value) throws IOException {
+        boolean serverSelectedFormat = "opus".equals(value) || "aac".equals(value);
         if ((!codec.isEmpty() && !codec.equals(value))
-                || (!requestedCodec.isEmpty() && !requestedCodec.equals(value))) {
+                || (!requestedCodec.isEmpty() && !requestedCodec.equals(value) && !serverSelectedFormat)) {
             throw invalid("NAS 返回的编码与所选转码格式不一致：" + value);
         }
         codec = value;
@@ -753,7 +781,7 @@ public final class HlsAudioAssembler implements Closeable {
     }
 
     private static boolean isSupported(String value) {
-        return "flac".equals(value) || "mp3".equals(value) || "aac".equals(value);
+        return "flac".equals(value) || "mp3".equals(value) || "aac".equals(value) || "opus".equals(value);
     }
 
     private static IOException invalid(String message) { return new IOException(message); }

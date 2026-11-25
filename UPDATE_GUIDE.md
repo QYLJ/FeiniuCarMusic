@@ -1,6 +1,6 @@
 # AList 在线更新发布指南
 
-当前版本：`0.3.17-sidebar-playback`，`versionCode 24`。登录页可点击“检查更新”，曲库页从齿轮设置进入“检查更新”；登录页、曲库页、播放页和设置页恢复前台时按 12 小时间隔自动联网检查。更新不依赖用户登录飞牛 NAS。
+当前线上版本为 `0.3.20-login-fixes`，`versionCode 27`。登录页可点击“检查更新”，曲库页从齿轮设置进入“检查更新”；登录页、曲库页、播放页和设置页恢复前台时按 12 小时间隔自动联网检查。更新不依赖用户登录飞牛 NAS。仅在本地生成更新包不会改变线上版本。
 
 发现可用新版时，弹窗展示当前版本、新版本及清单中的多行“更新内容”，可选择“稍后”或“下载并安装”。成功检查的版本信息保存在本机，检查期间切换页面或退到后台不会丢失提醒。选择“稍后”后同一新版在本次应用进程运行期间不重复自动提醒，重新启动应用后仍会提醒未安装的新版；手动检查随时可以重新提示。检查失败不记入 12 小时间隔，已有缓存时自动检查失败仍能提示此前发现的新版。
 
@@ -37,7 +37,7 @@ http://ikuai.qiuxiaoyu.top:5244/d/20T%E5%A4%A7%E7%A1%AC%E7%9B%98/QY_net/feiniu-u
 
 以前分发的 0.3.6 安装包更新地址为空，0.3.7 的默认路径是旧的单层目录。因此这些用户需要先手动安装一次本版 APK，后续即可通过当前新目录在应用内升级。
 
-本次构建沿用当前调试签名，并使用发布目录中上一版 `0.3.16-player-polish / versionCode 23` 的实际 APK 核对。对已经分发给用户的其它 APK，应使用那份实际旧包核对；同包名、同签名且更高的 `versionCode` 才能覆盖安装。不要在已有用户开始更新后临时更换签名密钥。
+本次构建沿用当前调试签名，并使用发布目录中上一版 `0.3.19-playback-fixes / versionCode 26` 的实际 APK 核对；旧包摘要与线上清单一致。对已经分发给用户的其它 APK，应使用那份实际旧包核对；同包名、同签名且更高的 `versionCode` 才能覆盖安装。不要在已有用户开始更新后临时更换签名密钥。
 
 ## 每次发布
 
@@ -57,15 +57,15 @@ http://ikuai.qiuxiaoyu.top:5244/d/20T%E5%A4%A7%E7%A1%AC%E7%9B%98/QY_net/feiniu-u
    ```powershell
    .\tools\prepare-update.ps1 `
        -Apk .\app\build\outputs\apk\debug\app-debug.apk `
-       -PreviousApk .\release\update-upload\FeiniuCarMusic-0.3.16-player-polish-23.apk `
-       -ChangelogFile .\release\CHANGELOG-0.3.17.txt
+       -PreviousApk .\release\update-upload\FeiniuCarMusic-0.3.19-playback-fixes-26.apk `
+       -ChangelogFile .\release\CHANGELOG-0.3.20.txt
    ```
 
    脚本会从 APK 读取真实包名、版本和最低 Android 版本，验证 APK 签名及新旧包一致性，计算 SHA-256，然后生成：
 
    ```text
    release/update-upload/
-     FeiniuCarMusic-0.3.17-sidebar-playback-24.apk
+     FeiniuCarMusic-0.3.20-login-fixes-27.apk
      update.json
    ```
 
@@ -78,12 +78,12 @@ http://ikuai.qiuxiaoyu.top:5244/d/20T%E5%A4%A7%E7%A1%AC%E7%9B%98/QY_net/feiniu-u
 
 ```json
 {
-  "versionCode": 24,
-  "versionName": "0.3.17-sidebar-playback",
-  "apkUrl": "FeiniuCarMusic-0.3.17-sidebar-playback-24.apk",
-  "sha256": "由发布脚本生成的64位SHA256",
+  "versionCode": 27,
+  "versionName": "0.3.20-login-fixes",
+  "apkUrl": "FeiniuCarMusic-0.3.20-login-fixes-27.apk",
+  "sha256": "E1AE10AB4DC814B413E6B22C75C3D643FD459311B989CF2CAD1898CB5869BD5E",
   "minSdk": 14,
-  "changelog": "1. 点击“歌单”后，在侧边栏下方展示歌单列表，右侧直接显示所选歌单歌曲，方便连续切换。\n2. 歌单列表支持分页、选中状态、空内容与失败重试；低分辨率下可分别滚动导航和歌单。\n3. 增大播放、上一首、下一首等图标和触控区域，适度拉开间距，宽屏仍保持居中和有限宽度。\n4. 下载和转码按实际歌曲隔离，避免不同歌曲因哈希碰撞等待旧任务；同一首歌曲仍顺序清理会话。\n5. 完整音频就绪后即可交给播放器，无需等待 NAS 结束会话的响应，改善旧系统及恢复播放位置时的额外等待。\n6. 补充缓存、转码列表、初始化段和完整音频的阶段耗时，保留更多声音诊断记录。"
+  "changelog": "1. FN Connect 目录服务临时出错时会尝试备用入口，登录失败时会显示内网、中继和外网线路各自的原因。\n2. 改善 Android 5/6 的 HTTPS 证书兼容性。车机时间异常、证书链不受信任、域名解析失败、端口超时及账号验证被拒绝时，会分别给出提示。\n3. 支持粘贴飞牛音乐网页地址。只填域名时按需尝试 HTTPS 443，确认音乐服务后再提交登录。\n4. 支持 NAS 返回 AAC 音频。旧车机无法直接打开完整音频文件时，会通过本机 HTTP 重试同一份文件。\n5. 歌词按账号缓存，首次成功加载后可离线读取。\n6. 设置中新增“打开应用自动播放”。默认关闭，开启后恢复上次的播放队列和进度。"
 }
 ```
 
@@ -119,3 +119,7 @@ http://ikuai.qiuxiaoyu.top:5244/d/20T%E5%A4%A7%E7%A1%AC%E7%9B%98/QY_net/feiniu-u
 0.3.12 历史测试共 45 项通过、2 项真实联网用例按默认条件跳过，新增自动全量加载、播放页后台补齐队列、未知总数与重复分页、替换队列后的隔离回归；Lint 0 个错误。
 
 0.3.16 汇总控制栏间距与背景优化、封面加载修复及转码首播/404 优化，保留此前侧栏、字体与导航恢复改进。发布文件生成到 `release/update-upload/`；其中 `update.json` 的版本、文件名、最低系统和 SHA-256 均从最终 APK 提取。仅生成文件不会改变 AList 在线版本，仍须按上述顺序先上传新 APK、最后替换清单。
+
+2026-11-17 已发布 `0.3.19-playback-fixes / 26` 至上述 AList 更新目录。发布后通过访客读取核对远端 APK 和清单摘要，实际客户端联网更新测试也已通过。
+
+2026-11-25 已发布 `0.3.20-login-fixes / 27`。访客下载核对与客户端实测均通过。

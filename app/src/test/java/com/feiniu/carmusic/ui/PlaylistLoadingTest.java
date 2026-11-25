@@ -124,9 +124,8 @@ public class PlaylistLoadingTest {
             loaded.get(0).accessStatus = 3;
             loaded.get(234).accessStatus = 3;
             activity.findViewById(R.id.play_all_button).performClick();
-            JSONArray saved = new JSONArray(service.getSharedPreferences("playback_queue", 0).getString("tracks", "[]"));
-            assertEquals(500, saved.length());
-            assertEquals("track-499", saved.getJSONObject(499).getString("guid"));
+            assertEquals(500, service.getQueueSnapshot().size());
+            assertEquals("track-499", service.getQueueSnapshot().get(499).guid);
             service.playAt(234);
             service.seekTo(42000);
             Field pendingSeek = PlaybackService.class.getDeclaredField("pendingSeekMs");
@@ -144,9 +143,14 @@ public class PlaylistLoadingTest {
             assertEquals(600, service.getQueueSnapshot().size());
             assertEquals(234, service.snapshot().queueIndex);
             assertEquals(42000, pendingSeek.getInt(service));
-            JSONArray complete = new JSONArray(service.getSharedPreferences("playback_queue", 0).getString("tracks", "[]"));
-            assertEquals(600, complete.length());
-            assertEquals("track-599", complete.getJSONObject(599).getString("guid"));
+            // Validate persistence through actual service recreation, independent of storage format.
+            serviceController.destroy();
+            serviceController = Robolectric.buildService(PlaybackService.class).create();
+            PlaybackService restored = serviceController.get();
+            assertEquals(600, restored.getQueueSnapshot().size());
+            assertEquals("track-599", restored.getQueueSnapshot().get(599).guid);
+            assertEquals(234, restored.snapshot().queueIndex);
+            assertEquals(42000, pendingSeek.getInt(restored));
         } finally {
             field("playback").set(activity, null);
             serviceController.destroy();

@@ -19,6 +19,7 @@
 
     <style name="AccentButton" parent="CarButton">
         <item name="android:background">@drawable/bg_accent_button</item>
+        <item name="android:textColor">@color/on_accent</item>
     </style>
 
     <style name="CompactButton" parent="CarButton">
@@ -53,5 +54,9 @@
         <item name="android:paddingLeft">16dp</item>
         <item name="android:paddingRight">16dp</item>
         <item name="android:singleLine">true</item>
+    </style>
+    <style name="AppTheme.Light" parent="android:style/Theme.Holo.Light.NoActionBar">
+        <item name="android:windowBackground">@color/background</item>
+        <item name="android:windowActionModeOverlay">true</item>
     </style>
 </resources>

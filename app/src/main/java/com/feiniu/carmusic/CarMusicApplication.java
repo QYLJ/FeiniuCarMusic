@@ -28,11 +28,13 @@ public final class CarMusicApplication extends Application {
     }
 
     @Override public void onLowMemory() {
+        com.feiniu.carmusic.data.CoverLoader.trimMemory(80);
         AppLog.warn("app.low_memory", "system requested memory release");
         super.onLowMemory();
     }
 
     @Override public void onTrimMemory(int level) {
+        com.feiniu.carmusic.data.CoverLoader.trimMemory(level);
         AppLog.info("app.trim_memory", "level=" + level);
         super.onTrimMemory(level);
     }

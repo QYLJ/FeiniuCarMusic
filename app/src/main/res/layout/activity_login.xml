@@ -127,6 +127,20 @@
             android:layout_height="42dp"
             android:layout_marginTop="2dp"
             android:text="@string/login" />
+        <CheckBox
+            android:id="@+id/remember_account"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="44dp"
+            android:checked="true"
+            android:text="加密保存此账户，便于免密切换"
+            android:textSize="13sp"
+            android:textColor="@color/text_secondary" />
+        <LinearLayout
+            android:id="@+id/saved_accounts"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
     </LinearLayout>
     </LinearLayout>
     </ScrollView>

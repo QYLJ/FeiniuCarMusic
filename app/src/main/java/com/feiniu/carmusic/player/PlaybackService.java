@@ -18,6 +18,8 @@ import android.util.Log;
 
 import com.feiniu.carmusic.R;
 import com.feiniu.carmusic.data.HistoryStore;
+import com.feiniu.carmusic.data.FnApiClient;
+import com.feiniu.carmusic.data.PlaybackPreferences;
 import com.feiniu.carmusic.diagnostics.AppLog;
 import com.feiniu.carmusic.model.Track;
 import com.feiniu.carmusic.ui.PlayerActivity;
@@ -61,6 +63,24 @@ public final class PlaybackService extends Service implements
 
     private QueueStore queueStore;
     private TrackFileCache trackCache;
+    private SongCache.Lease playbackCache;
+    private PlaybackPreferences playbackOptions;
+    private QueuePreloader preloader;
+    private static PlaybackService runningService;
+    private float fadeGain = 1f;
+    private Runnable fadeTick;
+    private int fadeSerial, pendingSwitch = -1;
+    private boolean fadingOut;
+    private final Runnable endFadeTick = new Runnable() {
+        @Override public void run() {
+            if (!isPlaying() || playbackOptions.fadeMs() == 0) return;
+            int remaining = getDurationMs() - getPositionMs();
+            if (pendingSwitch < 0 && !fadingOut && remaining > 0 && remaining <= playbackOptions.fadeMs()) {
+                animateGain(0f, remaining, null);
+            }
+            handler.postDelayed(this, 200L);
+        }
+    };
     private HistoryStore historyStore;
     private MediaPlayer player;
     private AudioManager audioManager;
@@ -68,6 +88,8 @@ public final class PlaybackService extends Service implements
     private int lastFocusResult;
     private int focusState;
     private boolean focusRequestActive;
+    private boolean restartPending;
+    private boolean initializing;
     private final List<String> audioEvents = new ArrayList<String>();
     private final long audioEventsStartedAt = SystemClock.elapsedRealtime();
     private MediaControlSession mediaControlSession;
@@ -79,6 +101,12 @@ public final class PlaybackService extends Service implements
     private boolean playWhenPrepared = true;
     private boolean resumeOnFocusGain;
     private boolean fallbackToMp3;
+    private String legacyAlternateCodec;
+    private String activeCodec;
+    private boolean fallbackToFile;
+    private OriginalAudioStream originalStream;
+    private OriginalAudioStream localStream;
+    private AudioFile localRetryFile;
     private boolean usingTranscode;
     private int audioMode;
     private int mp3BitrateKbps;
@@ -103,8 +131,13 @@ public final class PlaybackService extends Service implements
     @Override
     public void onCreate() {
         super.onCreate();
+        initializing = true;
+        restartPending = getSharedPreferences("playback_settings", MODE_PRIVATE).getBoolean("restart_playing", false);
         queueStore = new QueueStore(this);
         trackCache = new TrackFileCache(this);
+        playbackOptions = new PlaybackPreferences(this);
+        preloader = new QueuePreloader(this, trackCache);
+        runningService = this;
         historyStore = new HistoryStore(this);
         playMode = getSharedPreferences("playback_settings", MODE_PRIVATE)
                 .getInt("play_mode", MODE_SEQUENCE);
@@ -118,11 +151,19 @@ public final class PlaybackService extends Service implements
         restoreQueue();
         createPlayer();
         registerMediaControls();
+        initializing = false;
+        AppLog.info("playback.service_created", "queue=" + queue.size() + " recover=" + restartPending);
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent == null ? null : intent.getAction();
+        if (intent == null && restartPending && !queue.isEmpty()) {
+            restartPending = false;
+            recordAudioEvent("系统重建播放服务，恢复上次播放位置");
+            showNotification();
+            play();
+        }
         if (action != null && queue.isEmpty()) {
             stopSelf(startId);
             return START_NOT_STICKY;
@@ -133,7 +174,7 @@ public final class PlaybackService extends Service implements
         else if (ACTION_NEXT.equals(action)) next();
         else if (ACTION_PREVIOUS.equals(action)) previous();
         else if (ACTION_STOP.equals(action)) stopPlayback();
-        return START_NOT_STICKY;
+        return hasPlaybackIntent() ? START_STICKY : START_NOT_STICKY;
     }
 
     @Override
@@ -143,11 +184,17 @@ public final class PlaybackService extends Service implements
 
     @Override
     public void onDestroy() {
+        AppLog.info("playback.service_destroyed", "playing=" + isPlaying() + " loading=" + loading);
+        cancelFade();
+        preloader.close();
+        if (runningService == this) runningService = null;
         persist();
+        queueStore.close();
         loadGeneration++;
         handler.removeCallbacksAndMessages(null);
         if (loadTask != null) loadTask.cancel(true);
         closeProgressiveAudio();
+        closeOriginalStream();
         trackLoader.shutdownNow();
         abandonAudioFocus();
         unregisterMediaControls();
@@ -156,17 +203,22 @@ public final class PlaybackService extends Service implements
             player.release();
             player = null;
         }
+        releasePlaybackCache();
         super.onDestroy();
     }
 
     public String setQueueAndPlay(List<Track> tracks, int index) {
         if (tracks == null || tracks.isEmpty() || index < 0 || index >= tracks.size()) return "";
         queueToken = UUID.randomUUID().toString();
+        preloader.clear();
         queue.clear();
         queue.addAll(tracks);
         currentIndex = index;
+        queueStore.saveQueue(queue);
         pendingSeekMs = 0;
+        legacyAlternateCodec = null;
         fallbackToMp3 = false;
+        fallbackToFile = false;
         persist();
         prepareCurrent(true);
         return queueToken;
@@ -177,9 +229,15 @@ public final class PlaybackService extends Service implements
         if (expectedToken == null || expectedToken.length() == 0 || !expectedToken.equals(queueToken)) return false;
         if (tracks == null || tracks.isEmpty()) return true;
         queue.addAll(tracks);
+        queueStore.saveQueue(queue);
         persist();
         updatePlaybackState();
+        if (prepared) schedulePreload();
         return true;
+    }
+
+    public void playOnLaunch() {
+        if (playbackOptions.autoPlayOnLaunch() && !hasPlaybackIntent() && !loading && !focusBlocksPlayback()) play();
     }
 
     public void toggle() {
@@ -194,6 +252,11 @@ public final class PlaybackService extends Service implements
         if (focusState == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) focusState = 0;
         ensureStartedService();
         playWhenPrepared = true;
+        if (focusBlocksPlayback()) {
+            resumeOnFocusGain = true;
+            playWhenPrepared = false;
+            updatePlaybackState(); showNotification(); return;
+        }
         if (loading) {
             updatePlaybackState();
             showNotification();
@@ -209,7 +272,9 @@ public final class PlaybackService extends Service implements
     }
 
     private void startPreparedPlayback() {
+        cancelFade();
         player.start();
+        watchTrackEnd();
         errorMessage = "";
         updatePlaybackState();
         showNotification();
@@ -224,6 +289,7 @@ public final class PlaybackService extends Service implements
     }
 
     private void pauseInternal(boolean releaseAudioFocus) {
+        cancelFade();
         playWhenPrepared = false;
         if (player != null && prepared && player.isPlaying()) player.pause();
         if (releaseAudioFocus) abandonAudioFocus();
@@ -234,12 +300,9 @@ public final class PlaybackService extends Service implements
     }
 
     public void next() {
-        int nextIndex = nextIndex();
+        int nextIndex = nextIndex(pendingSwitch >= 0 ? pendingSwitch : currentIndex);
         if (nextIndex >= 0) {
-            currentIndex = nextIndex;
-            pendingSeekMs = 0;
-            fallbackToMp3 = false;
-            prepareCurrent(true);
+            switchTo(nextIndex);
         } else {
             pause();
         }
@@ -249,27 +312,46 @@ public final class PlaybackService extends Service implements
         if (getPositionMs() > 5000) {
             seekTo(0);
         } else if (!queue.isEmpty()) {
+            int index;
             if (playMode == MODE_SHUFFLE && queue.size() > 1) {
-                currentIndex = randomIndexExceptCurrent();
+                index = randomIndexExceptCurrent();
             } else if (currentIndex > 0) {
-                currentIndex--;
+                index = currentIndex - 1;
             } else if (playMode == MODE_REPEAT_ALL) {
-                currentIndex = queue.size() - 1;
+                index = queue.size() - 1;
             } else {
                 seekTo(0);
                 return;
             }
-            pendingSeekMs = 0;
-            fallbackToMp3 = false;
-            prepareCurrent(true);
+            switchTo(index);
         }
     }
 
     public void playAt(int index) {
         if (index < 0 || index >= queue.size()) return;
+        switchTo(index);
+    }
+
+    private void switchTo(final int index) {
+        boolean fade = isPlaying() && playbackOptions.fadeMs() > 0;
+        float from = fadeGain;
+        cancelFade();
+        if (fade) {
+            fadeGain = from;
+            pendingSwitch = index;
+            animateGain(0f, playbackOptions.fadeMs(), new Runnable() {
+                @Override public void run() { commitSwitch(index); }
+            });
+        } else commitSwitch(index);
+    }
+
+    private void commitSwitch(int index) {
+        pendingSwitch = -1;
         currentIndex = index;
         pendingSeekMs = 0;
+        legacyAlternateCodec = null;
         fallbackToMp3 = false;
+        fallbackToFile = false;
         prepareCurrent(true);
     }
 
@@ -288,13 +370,14 @@ public final class PlaybackService extends Service implements
     public void setMp3BitrateKbps(int value) {
         if (!validMp3Bitrate(value) || value == mp3BitrateKbps) return;
         mp3BitrateKbps = value;
+        preloader.clear();
         getSharedPreferences("playback_settings", MODE_PRIVATE).edit().putInt("mp3_bitrate", value).apply();
         Track current = currentIndex >= 0 && currentIndex < queue.size() ? queue.get(currentIndex) : null;
         if (current != null && (fallbackToMp3 || "mp3".equals(AudioCompatibility.transcodeCodec(current, audioMode, Build.VERSION.SDK_INT)))) {
             boolean resume = hasPlaybackIntent();
             pendingSeekMs = getPositionMs();
             prepareCurrent(resume);
-        }
+        } else if (prepared) schedulePreload();
     }
 
     public void setAudioMode(int mode) {
@@ -302,7 +385,10 @@ public final class PlaybackService extends Service implements
         boolean resume = hasPlaybackIntent();
         pendingSeekMs = getPositionMs();
         audioMode = mode;
+        preloader.clear();
+        legacyAlternateCodec = null;
         fallbackToMp3 = false;
+        fallbackToFile = false;
         getSharedPreferences("playback_settings", MODE_PRIVATE).edit().putInt("audio_mode", mode).apply();
         if (currentIndex >= 0 && currentIndex < queue.size()) prepareCurrent(resume);
     }
@@ -320,7 +406,8 @@ public final class PlaybackService extends Service implements
                 + " / " + audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC) + "\n"
                 + "音频焦点：" + audioFocusStatus() + "\n"
                 + "等待自动恢复：" + (resumeOnFocusGain ? "是" : "否") + "\n"
-                + "音频缓存：" + (progressiveAudio == null ? "完整文件模式"
+                + "音频缓存：" + (originalStream != null ? "原码 HTTP 流式播放，支持 Range 定位"
+                        : localStream != null ? "本机 HTTP 完整文件" : progressiveAudio == null ? "完整文件模式"
                         : progressiveAudio.isComplete() ? "下载已完成" : "边下载边播放，缓冲 " + progressiveAudio.availableBytes() / 1024 + " KB") + "\n"
                 + "蓝牙媒体通道：" + (audioManager.isBluetoothA2dpOn() ? "系统报告已启用" : "系统未报告启用") + "\n"
                 + "最近音频事件（服务启动后秒数）：\n" + recentAudioEvents() + "\n"
@@ -331,6 +418,7 @@ public final class PlaybackService extends Service implements
         playMode = (playMode + 1) % 4;
         getSharedPreferences("playback_settings", MODE_PRIVATE).edit()
                 .putInt("play_mode", playMode).commit();
+        schedulePreload();
         return playMode;
     }
 
@@ -342,6 +430,7 @@ public final class PlaybackService extends Service implements
     }
 
     public void seekTo(int positionMs) {
+        cancelFade();
         if (progressiveAudio != null) {
             // Unknown-length MP3/FLAC is not seekable on some native players.
             // Retain the current download and reopen its completed file for a reliable seek.
@@ -365,6 +454,7 @@ public final class PlaybackService extends Service implements
             int safe = Math.max(0, Math.min(positionMs, getDurationMs()));
             player.seekTo(safe);
             persist();
+            watchTrackEnd();
         } else {
             pendingSeekMs = Math.max(0, positionMs);
         }
@@ -379,6 +469,7 @@ public final class PlaybackService extends Service implements
     }
 
     public void clearQueueAndStop() {
+        preloader.clear();
         queueToken = "";
         stopPlayback();
         queue.clear();
@@ -395,7 +486,15 @@ public final class PlaybackService extends Service implements
         recordAudioEvent("播放器就绪 · " + (System.currentTimeMillis() - prepareStartedAtMs) + " ms");
         if (pendingSeekMs > 0) mediaPlayer.seekTo(pendingSeekMs);
         pendingSeekMs = 0;
-        if (playWhenPrepared && requestAudioFocus()) mediaPlayer.start();
+        if (playWhenPrepared) {
+            fadeGain = playbackOptions.fadeMs() > 0 ? 0f : 1f;
+            if (requestAudioFocus()) {
+                mediaPlayer.start();
+                animateGain(1f, playbackOptions.fadeMs(), null);
+                watchTrackEnd();
+            }
+        }
+        schedulePreload();
         if (currentIndex >= 0 && currentIndex < queue.size()) {
             historyStore.add(queue.get(currentIndex));
         }
@@ -408,21 +507,29 @@ public final class PlaybackService extends Service implements
 
     @Override
     public void onCompletion(MediaPlayer mediaPlayer) {
+        cancelFade();
         if (playMode == MODE_REPEAT_ONE) {
             pendingSeekMs = 0;
             prepareCurrent(true);
         } else {
-            next();
+            int following = nextIndex();
+            if (following >= 0) commitSwitch(following); else pause();
         }
     }
 
     @Override
     public boolean onError(MediaPlayer mediaPlayer, int what, int extra) {
+        cancelFade();
         AppLog.warn("playback.media_error", "what=" + what + " extra=" + extra);
+        if (!prepared && retryLocalFile()) return true;
+        if (!prepared && localStream != null && retryLegacyTranscode()) return true;
+        if (retryWithOriginalFile()) return true;
         if (retryWithNasMp3()) return true;
+        closeOriginalStream();
         if (loadTask != null) loadTask.cancel(true);
         closeProgressiveAudio();
         player.reset();
+        releasePlaybackCache();
         prepared = false;
         loading = false;
         resumeOnFocusGain = false;
@@ -430,6 +537,19 @@ public final class PlaybackService extends Service implements
         errorMessage = "当前系统无法播放此音频（" + what + "/" + extra + "），可点击音质切换 NAS 转码";
         updatePlaybackState();
         showNotification();
+        return true;
+    }
+
+    private String codecForCurrent(Track track) {
+        if (legacyAlternateCodec != null) return legacyAlternateCodec;
+        return fallbackToMp3 ? "mp3" : AudioCompatibility.transcodeCodec(track, audioMode, Build.VERSION.SDK_INT);
+    }
+
+    private boolean retryLegacyTranscode() {
+        if (Build.VERSION.SDK_INT >= 23 || !usingTranscode || legacyAlternateCodec != null) return false;
+        legacyAlternateCodec = "mp3".equals(activeCodec) ? "flac" : "mp3";
+        recordAudioEvent("车机无法打开本次转码，改试 NAS " + legacyAlternateCodec.toUpperCase(java.util.Locale.US));
+        prepareCurrent(playWhenPrepared || resumeOnFocusGain);
         return true;
     }
 
@@ -457,14 +577,17 @@ public final class PlaybackService extends Service implements
         } else if (focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) {
             // A duck callback cannot release a previous, stricter transient pause (for example a call).
             if (focusState != AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) focusState = focusChange;
-            if (player != null) player.setVolume(0.25f, 0.25f);
+            if (playbackOptions.pauseForNavigation()) {
+                resumeOnFocusGain = hasPlaybackIntent();
+                pauseInternal(false);
+            } else applyPlayerGain();
         } else if (focusChange == AudioManager.AUDIOFOCUS_GAIN) {
             // Ignore a queued gain after a manual pause/stop or permanent loss abandoned the request.
             if (!focusRequestActive && !resumeOnFocusGain) return;
             focusRequestActive = true;
             focusState = AudioManager.AUDIOFOCUS_GAIN;
             lastFocusResult = AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
-            if (player != null) player.setVolume(1.0f, 1.0f);
+            applyPlayerGain();
             if (resumeOnFocusGain) {
                 resumeOnFocusGain = false;
                 playWhenPrepared = true;
@@ -507,12 +630,15 @@ public final class PlaybackService extends Service implements
 
     private void prepareCurrent(boolean autoPlay) {
         if (currentIndex < 0 || currentIndex >= queue.size()) return;
+        cancelFade();
         final int generation = ++loadGeneration;
         if (loadTask != null) loadTask.cancel(true);
         closeProgressiveAudio();
+        closeOriginalStream();
         downloadedAudio = null;
         waitingForSeek = false;
         player.reset();
+        releasePlaybackCache();
         prepared = false;
         loading = false;
         final Track track = queue.get(currentIndex);
@@ -524,7 +650,7 @@ public final class PlaybackService extends Service implements
             return;
         }
         ensureStartedService();
-        if (focusState == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
+        if (focusBlocksPlayback()) {
             resumeOnFocusGain = autoPlay;
             playWhenPrepared = false;
         } else {
@@ -534,9 +660,11 @@ public final class PlaybackService extends Service implements
         prepared = false;
         loading = true;
         errorMessage = "";
-        final String transcodeCodec = fallbackToMp3 ? "mp3"
-                : AudioCompatibility.transcodeCodec(track, audioMode, Build.VERSION.SDK_INT);
+        final String transcodeCodec = codecForCurrent(track);
+        activeCodec = transcodeCodec;
         usingTranscode = transcodeCodec.length() > 0;
+        playbackCache = trackCache.protectTrack(track, transcodeCodec, mp3BitrateKbps);
+        preloader.retainCurrent(trackCache.requestKey(track, transcodeCodec, mp3BitrateKbps));
         audioDescription = usingTranscode ? "NAS 转码 · " + transcodeCodec.toUpperCase(java.util.Locale.US)
                 : "原始 · " + track.qualityLabel();
         persist();
@@ -544,14 +672,68 @@ public final class PlaybackService extends Service implements
         updateMetadata();
         showNotification();
         prepareStartedAtMs = System.currentTimeMillis();
+        if (Build.VERSION.SDK_INT < 23 && !usingTranscode && !fallbackToFile) {
+            recordAudioEvent("开始准备音频：原码直连流式播放");
+            loadTask = trackLoader.submit(new Runnable() {
+                @Override public void run() {
+                    try {
+                        final AudioFile prefetched = preloader.await(track, transcodeCodec, mp3BitrateKbps);
+                        if (prefetched != null) {
+                            handler.post(new Runnable() {
+                                @Override public void run() { openAudio(generation, prefetched, null); }
+                            });
+                            return;
+                        }
+                        final AudioFile cached = trackCache.cachedOriginal(track);
+                        if (cached != null) {
+                            handler.post(new Runnable() {
+                                @Override public void run() { openAudio(generation, cached, null); }
+                            });
+                            return;
+                        }
+                        final OriginalAudioStream stream = new OriginalAudioStream(FnApiClient.get(PlaybackService.this).snapshot(), track, trackCache);
+                        handler.post(new Runnable() {
+                            @Override public void run() {
+                                if (generation != loadGeneration) { stream.close(); return; }
+                                originalStream = stream;
+                                try {
+                                    configurePlayerAudio();
+                                    player.setWakeMode(getApplicationContext(), PowerManager.PARTIAL_WAKE_LOCK);
+                                    player.setDataSource(stream.url());
+                                    player.prepareAsync();
+                                } catch (Exception error) {
+                                    if (!retryWithOriginalFile()) failCurrentLoad(generation, error);
+                                }
+                            }
+                        });
+                    } catch (final Exception error) {
+                        handler.post(new Runnable() {
+                            @Override public void run() {
+                                if (generation != loadGeneration) return;
+                                fallbackToFile = true;
+                                prepareCurrent(playWhenPrepared || resumeOnFocusGain);
+                            }
+                        });
+                    }
+                }
+            });
+            return;
+        }
         final int requestedBitrate = mp3BitrateKbps;
         final boolean streamPlayback = Build.VERSION.SDK_INT >= 23 && pendingSeekMs <= 0;
         recordAudioEvent(streamPlayback ? "开始准备音频：渐进播放"
-                : "开始准备音频：完整文件模式（" + (pendingSeekMs > 0 ? "恢复播放位置" : "Android " + Build.VERSION.SDK_INT) + "）");
+                : "开始准备音频：完整文件模式（" + (pendingSeekMs > 0 ? "恢复播放位置" : "API " + Build.VERSION.SDK_INT) + "）");
         loadTask = trackLoader.submit(new Runnable() {
             @Override
             public void run() {
                 try {
+                    final AudioFile prefetched = preloader.await(track, transcodeCodec, requestedBitrate);
+                    if (prefetched != null) {
+                        handler.post(new Runnable() {
+                            @Override public void run() { openAudio(generation, prefetched, null); }
+                        });
+                        return;
+                    }
                     trackCache.getOrDownload(track, transcodeCodec, requestedBitrate,
                             !streamPlayback ? null : new TrackFileCache.ReadyListener() {
                                 @Override public void onReady(final ProgressiveAudioFile stream) {
@@ -600,19 +782,23 @@ public final class PlaybackService extends Service implements
         }
         FileInputStream input = null;
         try {
+            localRetryFile = stream == null && Build.VERSION.SDK_INT < 23 ? audio : null;
             recordAudioEvent("交给播放器 · " + (System.currentTimeMillis() - prepareStartedAtMs) + " ms");
             audioDescription = audio.description();
+            recordAudioEvent((stream == null ? "完整文件" : "渐进音频") + " · " + audioDescription + " · " + audio.file.length() + " B");
             progressiveAudio = stream;
             configurePlayerAudio();
             player.setWakeMode(getApplicationContext(), PowerManager.PARTIAL_WAKE_LOCK);
             if (stream != null) AudioDataSourceApi23.set(player, stream);
             else {
                 input = new FileInputStream(audio.file);
-                player.setDataSource(input.getFD());
+                long length = input.getChannel().size();
+                if (length <= 0) throw new java.io.IOException("音频文件为空");
+                player.setDataSource(input.getFD(), 0, length);
             }
             player.prepareAsync();
         } catch (Exception error) {
-            if (!retryWithNasMp3()) failCurrentLoad(generation, error);
+            if (!retryLocalFile() && !retryWithNasMp3()) failCurrentLoad(generation, error);
         } finally {
             if (input != null) try { input.close(); } catch (Exception ignored) { }
         }
@@ -625,6 +811,64 @@ public final class PlaybackService extends Service implements
         }
     }
 
+    private boolean retryLocalFile() {
+        final AudioFile audio = localRetryFile;
+        if (audio == null) return false;
+        localRetryFile = null;
+        final int generation = loadGeneration;
+        recordAudioEvent("车机无法直接打开文件，使用本机 HTTP 重试同一份音频");
+        loading = true;
+        prepared = false;
+        player.reset();
+        trackLoader.execute(new Runnable() {
+            @Override public void run() {
+                try {
+                    final OriginalAudioStream server = new OriginalAudioStream(audio);
+                    handler.post(new Runnable() {
+                        @Override public void run() {
+                            if (generation != loadGeneration) { server.close(); return; }
+                            localStream = server;
+                            try {
+                                configurePlayerAudio();
+                                player.setWakeMode(getApplicationContext(), PowerManager.PARTIAL_WAKE_LOCK);
+                                player.setDataSource(server.url());
+                                player.prepareAsync();
+                            } catch (Exception error) { localRetryFailed(generation, error); }
+                        }
+                    });
+                } catch (final Exception error) {
+                    handler.post(new Runnable() {
+                        @Override public void run() { localRetryFailed(generation, error); }
+                    });
+                }
+            }
+        });
+        return true;
+    }
+
+    private void localRetryFailed(int generation, Exception error) {
+        if (generation == loadGeneration && !retryLegacyTranscode() && !retryWithNasMp3()) failCurrentLoad(generation, error);
+    }
+
+    private void closeOriginalStream() {
+        localRetryFile = null;
+        if (localStream != null) { localStream.close(); localStream = null; }
+        if (originalStream != null) { originalStream.close(); originalStream = null; }
+    }
+
+    private void releasePlaybackCache() {
+        if (playbackCache != null) { playbackCache.close(); playbackCache = null; }
+    }
+
+    private boolean retryWithOriginalFile() {
+        if (originalStream == null || fallbackToFile) return false;
+        recordAudioEvent("原码流式读取失败，回退完整文件播放");
+        pendingSeekMs = getPositionMs();
+        fallbackToFile = true;
+        prepareCurrent(playWhenPrepared || resumeOnFocusGain);
+        return true;
+    }
+
     private void failCurrentLoad(int generation, Exception error) {
         if (generation != loadGeneration) return;
         recordAudioEvent("播放准备失败：" + error.getMessage());
@@ -633,7 +877,9 @@ public final class PlaybackService extends Service implements
         resumeOnFocusGain = false;
         playWhenPrepared = false;
         closeProgressiveAudio();
+        closeOriginalStream();
         if (player != null) player.reset();
+        releasePlaybackCache();
         errorMessage = "无法打开音频：" + safeMessage(error);
         Log.e(TAG, errorMessage, error);
         AppLog.error("playback.prepare_failed", error);
@@ -655,12 +901,11 @@ public final class PlaybackService extends Service implements
     }
 
     private boolean requestAudioFocus() {
-        if (focusState == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) return false;
+        if (focusBlocksPlayback()) return false;
         if (focusRequestActive && (focusState == AudioManager.AUDIOFOCUS_GAIN
                 || focusState == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK)) {
             if (player != null) {
-                float volume = focusState == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK ? .25f : 1f;
-                player.setVolume(volume, volume);
+                applyPlayerGain();
             }
             return true;
         }
@@ -676,9 +921,14 @@ public final class PlaybackService extends Service implements
         focusRequestActive = granted;
         focusState = granted ? AudioManager.AUDIOFOCUS_GAIN : 0;
         recordAudioEvent(granted ? "申请焦点成功" : "申请焦点被拒绝");
-        if (granted && player != null) player.setVolume(1.0f, 1.0f);
+        if (granted) applyPlayerGain();
         if (!granted) errorMessage = "未获得媒体音频焦点，请结束其他音频或通话后再试";
         return granted;
+    }
+
+    private boolean focusBlocksPlayback() {
+        return focusState == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
+                || focusState == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK && playbackOptions.pauseForNavigation();
     }
 
     private void abandonAudioFocus() {
@@ -717,6 +967,8 @@ public final class PlaybackService extends Service implements
     }
 
     private void stopPlayback() {
+        cancelFade();
+        preloader.clear();
         recordAudioEvent("停止播放");
         resumeOnFocusGain = false;
         playWhenPrepared = false;
@@ -724,9 +976,11 @@ public final class PlaybackService extends Service implements
         loadGeneration++;
         if (loadTask != null) loadTask.cancel(true);
         closeProgressiveAudio();
+        closeOriginalStream();
         if (player != null) {
             player.reset();
         }
+        releasePlaybackCache();
         prepared = false;
         loading = false;
         waitingForSeek = false;
@@ -735,13 +989,18 @@ public final class PlaybackService extends Service implements
         persist();
         abandonAudioFocus();
         stopForeground(true);
+        getSharedPreferences("playback_settings", MODE_PRIVATE).edit().putBoolean("restart_playing", false).apply();
         stopSelf();
     }
 
     private int nextIndex() {
+        return nextIndex(currentIndex);
+    }
+
+    private int nextIndex(int index) {
         if (queue.isEmpty()) return -1;
         if (playMode == MODE_SHUFFLE && queue.size() > 1) return randomIndexExceptCurrent();
-        if (currentIndex + 1 < queue.size()) return currentIndex + 1;
+        if (index + 1 < queue.size()) return index + 1;
         if (playMode == MODE_REPEAT_ALL || playMode == MODE_SHUFFLE) return 0;
         return -1;
     }
@@ -759,8 +1018,93 @@ public final class PlaybackService extends Service implements
         else startService(intent);
     }
 
+    public void refreshPlaybackOptions() {
+        cancelFade();
+        preloader.clear();
+        if (focusState == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK && playbackOptions.pauseForNavigation()) {
+            resumeOnFocusGain = hasPlaybackIntent();
+            pauseInternal(false);
+        }
+        if (prepared) { schedulePreload(); watchTrackEnd(); }
+    }
+
+    public static void resetForAccountSwitch(Context context) {
+        context.getSharedPreferences("playback_settings", MODE_PRIVATE).edit().putBoolean("restart_playing", false).apply();
+        if (runningService != null) runningService.clearQueueAndStop();
+        else {
+            QueueStore storedQueue = new QueueStore(context);
+            storedQueue.clear();
+            storedQueue.close();
+        }
+        new HistoryStore(context).clear();
+    }
+
+    private void schedulePreload() {
+        java.util.List<QueuePreloader.Request> upcoming = new ArrayList<QueuePreloader.Request>();
+        if (playbackOptions.preloadCount() > 0 && currentIndex >= 0
+                && (playMode == MODE_SEQUENCE || playMode == MODE_REPEAT_ALL)) {
+            for (int step = 1; step < queue.size() && upcoming.size() < playbackOptions.preloadCount(); step++) {
+                int index = currentIndex + step;
+                if (index >= queue.size()) {
+                    if (playMode != MODE_REPEAT_ALL) break;
+                    index %= queue.size();
+                }
+                Track track = queue.get(index);
+                if (track.accessStatus == 3) continue;
+                upcoming.add(new QueuePreloader.Request(track,
+                        AudioCompatibility.transcodeCodec(track, audioMode, Build.VERSION.SDK_INT), mp3BitrateKbps, trackCache));
+            }
+        }
+        Track current = currentIndex >= 0 && currentIndex < queue.size() ? queue.get(currentIndex) : null;
+        String codec = current == null ? "" : codecForCurrent(current);
+        preloader.plan(upcoming, current == null ? null : trackCache.requestKey(current, codec, mp3BitrateKbps));
+    }
+
+    private void applyPlayerGain() {
+        if (player == null) return;
+        float gain = fadeGain * (focusState == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK ? .25f : 1f);
+        player.setVolume(gain, gain);
+    }
+
+    private void cancelFade() {
+        fadeSerial++;
+        if (fadeTick != null) handler.removeCallbacks(fadeTick);
+        handler.removeCallbacks(endFadeTick);
+        fadeTick = null;
+        pendingSwitch = -1;
+        fadingOut = false;
+        fadeGain = 1f;
+        applyPlayerGain();
+    }
+
+    private void animateGain(final float target, final int durationMs, final Runnable after) {
+        if (fadeTick != null) handler.removeCallbacks(fadeTick);
+        final int serial = ++fadeSerial;
+        final float from = fadeGain;
+        final long started = SystemClock.uptimeMillis();
+        fadingOut = target < from;
+        fadeTick = new Runnable() {
+            @Override public void run() {
+                if (serial != fadeSerial || player == null) return;
+                float fraction = durationMs <= 0 ? 1f : Math.min(1f, (SystemClock.uptimeMillis() - started) / (float) durationMs);
+                fadeGain = from + (target - from) * fraction;
+                applyPlayerGain();
+                if (fraction >= 1f) {
+                    fadeTick = null;
+                    if (after != null) after.run();
+                } else handler.postDelayed(this, 20L);
+            }
+        };
+        fadeTick.run();
+    }
+
+    private void watchTrackEnd() {
+        handler.removeCallbacks(endFadeTick);
+        if (playbackOptions.fadeMs() > 0 && isPlaying()) handler.postDelayed(endFadeTick, 200L);
+    }
+
     private void persist() {
-        queueStore.save(queue, currentIndex, getPositionMs());
+        queueStore.savePosition(currentIndex, getPositionMs());
     }
 
     private void restoreQueue() {
@@ -795,6 +1139,8 @@ public final class PlaybackService extends Service implements
     }
 
     private void updatePlaybackState() {
+        if (!initializing) getSharedPreferences("playback_settings", MODE_PRIVATE).edit()
+                .putBoolean("restart_playing", hasPlaybackIntent()).apply();
         updateMediaControlSession();
     }
 

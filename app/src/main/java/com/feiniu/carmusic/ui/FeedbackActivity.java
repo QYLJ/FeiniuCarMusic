@@ -33,7 +33,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /** One-screen issue report flow, available before or after NAS login. */
-public final class FeedbackActivity extends Activity {
+public final class FeedbackActivity extends ThemeActivity {
     private static final String[] CATEGORIES = {"播放问题", "登录或连接", "界面显示", "更新问题", "建议", "其他"};
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());

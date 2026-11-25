@@ -68,6 +68,11 @@ public class FnLoginTest {
         assertEquals(origin + "/protected", findRoute(origin + "/bad", origin + "/protected"));
     }
 
+    @Test public void protectedMusicConfigDoesNotRequireOptionalDataEnvelope() throws Exception {
+        respond("/music/api/v1/sys/config", 401, "{\"code\":120001,\"msg\":\"unauthorized\"}");
+        assertEquals(origin, findRoute(origin));
+    }
+
     @Test public void businessUnauthorizedConfigStillSelectsMusicRoute() throws Exception {
         respond("/music/api/v1/sys/config", 200,
                 "{\"code\":120001,\"msg\":\"unauthorized, please login again\",\"data\":null}");
@@ -240,6 +245,60 @@ public class FnLoginTest {
         assertEquals("域名解析失败", LoginDiagnostics.networkFailure(new UnknownHostException("sensitive-host")));
         assertEquals("连接超时", LoginDiagnostics.networkFailure(new SocketTimeoutException("sensitive-url")));
         assertEquals("网络连接失败", LoginDiagnostics.networkFailure(new Exception("sensitive-url")));
+    }
+
+    @Test public void retriesTransientDirectoryErrorButStopsOnUnknownFnId() throws Exception {
+        respond("/one/api/v1/fn/con", 200, "{\"code\":3000009,\"msg\":\"Network Error\"}");
+        respond("/two/api/v1/fn/con", 200, "{\"code\":0,\"data\":{\"ipv4\":[\"192.168.1.2\"]}}");
+        String[] directories = {origin + "/one", origin + "/two"};
+        assertTrue(FnConnectResolver.lookup("myfnid", directories).has("ipv4"));
+        respond("/one/api/v1/fn/con", 200, "{\"code\":3000006}");
+        try { FnConnectResolver.lookup("myfnid", directories); fail(); }
+        catch (ApiException expected) { assertTrue(expected.getMessage().contains("不存在")); }
+        assertEquals(3, server.getRequestCount());
+    }
+
+    @Test public void loginDiagnosticsUsePeerNotClientIpAndExplainWrongClock() throws Exception {
+        String raw = "failed to connect to example.test/192.168.1.20 (port 5666) from /192.168.1.9 after 8000ms";
+        String hint = LoginDiagnostics.connectionHint(new java.net.ConnectException(raw), "http://example.test:5666");
+        assertTrue(hint.contains("内网")); assertTrue(hint.contains("超时")); assertFalse(hint.contains("192.168"));
+        hint = LoginDiagnostics.connectionHint(new java.net.ConnectException(raw.replace("example.test/192.168.1.20", "example.test/8.8.8.8")), "http://example.test:5666");
+        assertFalse(hint.contains("内网")); assertTrue(hint.contains("端口"));
+        SSLHandshakeException handshake = new SSLHandshakeException("handshake failed");
+        handshake.initCause(new java.security.cert.CertificateNotYetValidException());
+        assertTrue(LoginDiagnostics.networkFailure(handshake).contains("校准"));
+    }
+
+    @Test public void bareDomainSelectsWorkingAlternativeBeforeSendingCredentials() throws Exception {
+        respond("/wrong/music/api/v1/sys/config", 502, "bad gateway");
+        respond("/working/music/api/v1/sys/config", 200, "{\"code\":0,\"data\":{}}");
+        String selected = api.selectBareDomainRoute(origin + "/wrong", origin + "/working");
+        respond("/working/music/api/v1/user/password-login", 200, "{\"code\":0,\"data\":{\"userToken\":\"test\"}}");
+        api.login(selected, "alice", "test");
+        assertEquals("GET", server.takeRequest().getMethod());
+        assertEquals("GET", server.takeRequest().getMethod());
+        RecordedRequest login = server.takeRequest();
+        assertEquals("POST", login.getMethod()); assertTrue(login.getPath().startsWith("/working/"));
+        assertEquals(3, server.getRequestCount());
+    }
+
+    @Test public void pastedMusicPageAndRelayAndTlsPortsNormalizeCorrectly() throws Exception {
+        assertEquals("https://example.test/reverse", FnApiClient.normalizeBaseUrl("https://example.test/reverse/music/#/library"));
+        assertEquals("https://myfnid.fnos.net", FnApiClient.normalizeBaseUrl("myfnid.fnos.net"));
+        assertEquals("https://example.test:5667", FnApiClient.normalizeBaseUrl("example.test:5667"));
+        assertEquals("http://192.168.1.20:5666", FnApiClient.normalizeBaseUrl("192.168.1.20"));
+    }
+
+    @Test public void lyricsRemainReadableOfflineAndAreIsolatedByUser() throws Exception {
+        api.session().saveLogin(origin, "token", "user1", origin);
+        respond("/music/api/v1/lyric/list", 200, "{\"code\":0,\"data\":{\"list\":[{\"content\":\"[00:01]hello\"}]}}");
+        assertEquals("[00:01]hello", api.getLyric("one-song"));
+        respond("/music/api/v1/lyric/list", 503, "unavailable");
+        assertEquals("[00:01]hello", api.snapshot().getLyric("one-song"));
+        assertEquals(1, server.getRequestCount());
+        api.session().saveLogin(origin, "other-token", "user2", origin);
+        try { api.getLyric("one-song"); fail(); }
+        catch (ApiException expected) { assertEquals(503, expected.getStatusCode()); }
     }
 
     private String findRoute(String... routes) throws Exception {

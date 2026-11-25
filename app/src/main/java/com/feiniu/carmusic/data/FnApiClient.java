@@ -1,6 +1,9 @@
 package com.feiniu.carmusic.data;
 
 import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
+import com.feiniu.carmusic.diagnostics.AppLog;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.net.Uri;
@@ -39,15 +42,37 @@ public final class FnApiClient {
     private static volatile FnApiClient instance;
 
     private final SessionStore session;
-    private final FnRelaySession relaySession = new FnRelaySession();
+    private final Context context;
+    private final FnRelaySession relaySession;
+    private final Object routeLock = new Object();
+    interface RouteLookup { List<String> resolve(String fnId) throws ApiException; }
+    private RouteLookup routeLookup = new RouteLookup() {
+        @Override public List<String> resolve(String fnId) throws ApiException {
+            return FnConnectResolver.resolveCandidates(fnId);
+        }
+    };
+    private String lastFailedRoute = "";
+    private long lastRecoveryAt;
 
     public interface TrackBufferListener {
         void onBufferReady(long downloadedBytes, long totalBytes) throws Exception;
     }
 
     private FnApiClient(Context context) {
+        this(context, new SessionStore(context), new FnRelaySession());
+    }
+
+    private FnApiClient(Context context, SessionStore session, FnRelaySession relay) {
         TlsCompat.initialize();
-        session = new SessionStore(context);
+        this.context = context.getApplicationContext();
+        this.session = session;
+        relaySession = relay;
+    }
+
+    public FnApiClient snapshot() {
+        FnApiClient client = new FnApiClient(context, session.snapshot(), relaySession);
+        client.routeLookup = routeLookup;
+        return client;
     }
 
     public static FnApiClient get(Context context) {
@@ -64,14 +89,19 @@ public final class FnApiClient {
     }
 
     public void login(String serverInput, String username, String password) throws Exception {
+        LoginResult result = authenticate(serverInput, username, password);
+        session.saveLogin(result.baseUrl, result.token, result.username, result.loginAddress);
+    }
+
+    public LoginResult authenticate(String serverInput, String username, String password) throws Exception {
         String loginAddress = serverInput == null ? "" : serverInput.trim();
         String baseUrl;
         if (FnConnectResolver.looksLikeFnIdInput(loginAddress)) {
             String fnId = FnConnectResolver.normalizeFnId(loginAddress);
-            baseUrl = findReachableFnIdRoute(FnConnectResolver.resolveCandidates(fnId));
+            baseUrl = findReachableFnIdRoute(routeLookup.resolve(fnId));
             loginAddress = fnId;
         } else {
-            baseUrl = normalizeBaseUrl(loginAddress);
+            baseUrl = directLoginBase(loginAddress);
         }
         JSONObject request = new JSONObject();
         request.put("username", username);
@@ -79,7 +109,11 @@ public final class FnApiClient {
         request.put("deviceId", session.getDeviceId());
 
         Response response = execute(baseUrl, "/user/password-login", "POST", request.toString(), false);
-        JSONObject root = parseRoot(response.body);
+        JSONObject root;
+        try { root = parseRoot(response.body); }
+        catch (ApiException invalidResponse) {
+            throw new ApiException("地址可访问，但登录接口未返回飞牛音乐数据。请检查音乐应用是否已安装，以及域名、端口和反向代理路径");
+        }
         int code = root.optInt("code", 0);
         if (code != 0) {
             throw new ApiException(LoginDiagnostics.loginFailure(response.status, code,
@@ -88,19 +122,31 @@ public final class FnApiClient {
         JSONObject data = root.optJSONObject("data");
         String token = data == null ? "" : data.optString("userToken", "");
         if (token.length() == 0) throw new ApiException("登录失败：服务器未返回 Token");
-        session.saveLogin(baseUrl, token, username, loginAddress);
+        return new LoginResult(baseUrl, token, username, loginAddress);
+    }
+
+    public static final class LoginResult {
+        public final String baseUrl, token, username, loginAddress;
+        LoginResult(String base, String token, String user, String address) {
+            baseUrl = base; this.token = token; username = user; loginAddress = address;
+        }
     }
 
     private String findReachableFnIdRoute(List<String> candidates) throws ApiException {
         LinkedHashSet<String> failures = new LinkedHashSet<String>();
         for (String candidate : candidates) {
+            if (isMobileNetwork() && isLocalAddress(candidate)) continue;
             try {
                 return probeMusicServer(candidate);
             } catch (ApiException error) {
-                failures.add(error.getMessage());
+                String route = isLocalAddress(candidate) ? "内网" : "外网";
+                try { if (!FnRelaySession.directoryReferer(new URL(candidate)).isEmpty()) route = "FN 中继"; }
+                catch (java.net.MalformedURLException ignored) { }
+                failures.add(route + "：" + error.getMessage());
             }
         }
         StringBuilder detail = new StringBuilder();
+        if (failures.isEmpty()) failures.add("目录只返回了内网地址，移动网络无法访问。请启用 FN Connect 中继或配置公网地址");
         for (String failure : failures) {
             if (detail.length() > 0) detail.append("；");
             detail.append(failure);
@@ -109,13 +155,73 @@ public final class FnApiClient {
                 + "。请用同一网络的官方音乐页面检查访问");
     }
 
+    private boolean isMobileNetwork() {
+        ConnectivityManager manager = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+        NetworkInfo network = manager == null ? null : manager.getActiveNetworkInfo();
+        return network != null && network.isConnected() && network.getType() == ConnectivityManager.TYPE_MOBILE;
+    }
+
+    static boolean isLocalAddress(String address) {
+        try {
+            String host = new URL(address).getHost().toLowerCase(java.util.Locale.US);
+            if (host.startsWith("[")) host = host.substring(1, host.length() - 1);
+            boolean ipv4 = host.matches("\\d{1,3}(?:\\.\\d{1,3}){3}");
+            if (ipv4) for (String part : host.split("\\.")) if (Integer.parseInt(part) > 255) return false;
+            if (ipv4 && (host.startsWith("192.168.") || host.startsWith("10.") || host.startsWith("169.254."))) return true;
+            if (ipv4 && host.startsWith("172.")) {
+                String[] parts = host.split("\\.");
+                int second = parts.length == 4 ? Integer.parseInt(parts[1]) : 0;
+                return second >= 16 && second <= 31;
+            }
+            return host.indexOf(':') >= 0 && (host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80:"));
+        } catch (Exception ignored) { return false; }
+    }
+
+    private String currentMusicBase() throws ApiException {
+        String base = session.getBaseUrl();
+        if (isMobileNetwork() && isLocalAddress(base)) {
+            if (recoverRoute(base)) return session.getBaseUrl();
+            throw new ApiException("当前为移动网络，无法访问 NAS 内网地址。请使用 FN ID 或可用的外网地址登录");
+        }
+        return base;
+    }
+
+    /** Re-resolve only the saved FN ID; never guess another NAS or resend a saved password. */
+    private boolean recoverRoute(String failedBase) throws ApiException {
+        if (Thread.currentThread().isInterrupted()) return false;
+        synchronized (routeLock) {
+            if (!failedBase.equals(session.getBaseUrl())) return session.hasSession();
+            String loginAddress = session.getLoginAddress();
+            String token = session.getToken();
+            if (token.length() == 0 || !FnConnectResolver.looksLikeFnIdInput(loginAddress)) return false;
+            try { loginAddress = FnConnectResolver.normalizeFnId(loginAddress); }
+            catch (ApiException invalidId) { return false; }
+            long now = android.os.SystemClock.elapsedRealtime();
+            if (failedBase.equals(lastFailedRoute) && now - lastRecoveryAt < 15000L) return false;
+            lastFailedRoute = failedBase;
+            lastRecoveryAt = now;
+            List<String> candidates = routeLookup.resolve(loginAddress);
+            for (String candidate : candidates) {
+                if (Thread.currentThread().isInterrupted()) return false;
+                if (candidate.equals(failedBase) || (isMobileNetwork() && isLocalAddress(candidate))) continue;
+                try {
+                    String reachable = probeMusicServer(candidate);
+                    if (session.changeRoute(failedBase, token, reachable)) {
+                        AppLog.info("network.route_changed", "music route recovered");
+                        return true;
+                    }
+                    return false;
+                } catch (ApiException ignored) { /* Try the remaining directory candidates. */ }
+            }
+            return false;
+        }
+    }
+
     private String probeMusicServer(String baseUrl) throws ApiException {
         HttpURLConnection connection = null;
         try {
             connection = openConnection(new URL(baseUrl + API_PREFIX + "/sys/config"), "GET", false);
-            boolean local = baseUrl.startsWith("http://192.168.")
-                    || baseUrl.startsWith("http://10.") || baseUrl.startsWith("http://172.")
-                    || baseUrl.startsWith("http://[");
+            boolean local = isLocalAddress(baseUrl);
             connection.setConnectTimeout(local ? 1800 : 7000);
             connection.setReadTimeout(local ? 2500 : 9000);
             int status = connection.getResponseCode();
@@ -128,18 +234,25 @@ public final class FnApiClient {
                     && (root.has("msg") || root.has("message"));
             boolean success = status >= 200 && status < 300 && root != null && root.has("code")
                     && root.optInt("code", -1) == 0 && root.optJSONObject("data") != null;
-            boolean authRequired = musicEnvelope && (status == 401 || status == 403
-                    || (status >= 200 && status < 300 && LoginDiagnostics.isAuthenticationRejection(
-                    root.optInt("code", -1), root.optString("msg", root.optString("message", "")))));
+            boolean recognizedAuthCode = root != null && (root.optInt("code", -1) == 120001
+                    || musicEnvelope && LoginDiagnostics.isAuthenticationRejection(root.optInt("code", -1),
+                    root.optString("msg", root.optString("message", ""))));
+            boolean authRequired = (status == 401 || status == 403) && (musicEnvelope || recognizedAuthCode)
+                    || (status >= 200 && status < 300 && recognizedAuthCode);
             if (success || authRequired) {
                 // A protected config endpoint still proves the service can answer.
                 // Authenticate once on that service, so credential failures are not retried across routes.
                 String resolved = connection.getURL().toExternalForm();
                 String suffix = API_PREFIX + "/sys/config";
+                URL requested = new URL(baseUrl);
+                URL reached = connection.getURL();
+                if (!requested.getHost().equalsIgnoreCase(reached.getHost())
+                        || ("https".equals(requested.getProtocol()) && !"https".equals(reached.getProtocol())))
+                    throw new ApiException("音乐接口跳转到其他站点，请填写最终音乐服务地址");
                 if (resolved.endsWith(suffix)) return resolved.substring(0, resolved.length() - suffix.length());
                 throw new ApiException("音乐接口被重定向到其他页面");
             }
-            if (status < 200 || status >= 300) throw new ApiException("音乐线路返回 HTTP " + status);
+            if (status < 200 || status >= 300) throw new ApiException("音乐线路返回 HTTP " + status, status);
             if (musicEnvelope) {
                 throw new ApiException("音乐服务配置请求失败（错误码 " + root.optInt("code", -1) + "）");
             }
@@ -150,7 +263,9 @@ public final class FnApiClient {
         } catch (ApiException error) {
             throw error;
         } catch (IOException error) {
-            throw new ApiException(LoginDiagnostics.networkFailure(error));
+            ApiException failed = new ApiException(LoginDiagnostics.connectionHint(error, baseUrl));
+            failed.initCause(error);
+            throw failed;
         } finally {
             if (connection != null) connection.disconnect();
         }
@@ -245,6 +360,34 @@ public final class FnApiClient {
     }
 
     public String getLyric(String trackGuid) throws Exception {
+        if (!session.isSnapshot()) return snapshot().getLyric(trackGuid);
+        if (!session.hasSession()) throw new ApiException("请先登录");
+        String server = session.getLoginAddress();
+        if (FnConnectResolver.looksLikeFnIdInput(server)) server = "fnid:" + FnConnectResolver.normalizeFnId(server);
+        else server = session.getBaseUrl();
+        String key = new JSONArray().put(server).put(session.getUsername()).put(trackGuid).toString();
+        File entry = LyricCache.entry(context, sha256(key));
+        String cached = LyricCache.read(entry);
+        if (!cached.isEmpty() && LyricCache.fresh(entry)) return cached;
+        try {
+            String result = fetchLyric(trackGuid);
+            if (result.isEmpty()) entry.delete();
+            else LyricCache.save(entry, result);
+            return result;
+        } catch (ApiException failed) {
+            if (!cached.isEmpty() && (failed.getCause() instanceof IOException || failed.getStatusCode() >= 500
+                    || (failed.getStatusCode() == 0 && isOffline() && session.hasSession()))) return cached;
+            throw failed;
+        }
+    }
+
+    private boolean isOffline() {
+        ConnectivityManager manager = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+        NetworkInfo active = manager == null ? null : manager.getActiveNetworkInfo();
+        return active == null || !active.isConnected();
+    }
+
+    private String fetchLyric(String trackGuid) throws Exception {
         Response response = execute(session.getBaseUrl(), "/lyric/list?trackGUID="
                 + Uri.encode(trackGuid), "GET", null, true);
         JSONObject root = parseRoot(response.body);
@@ -404,6 +547,37 @@ public final class FnApiClient {
         return "music-token=" + session.getToken();
     }
 
+    /** Opens an authenticated original stream for downloads or the legacy loopback player. */
+    public HttpURLConnection openTrackStream(String guid, String range) throws Exception {
+        if (!session.isSnapshot()) return snapshot().openTrackStream(guid, range);
+        String base = currentMusicBase();
+        try { return openTrackStreamAt(base, guid, range); }
+        catch (IOException error) {
+            if (recoverRoute(base)) return openTrackStreamAt(session.getBaseUrl(), guid, range);
+            throw error;
+        }
+    }
+
+    private HttpURLConnection openTrackStreamAt(String base, String guid, String range) throws Exception {
+        HttpURLConnection connection = openConnection(new URL(base + API_PREFIX + "/track/stream?guid=" + Uri.encode(guid)), "GET", true);
+        boolean opened = false;
+        try {
+            connection.setInstanceFollowRedirects(false);
+            connection.setReadTimeout(60000);
+            connection.setRequestProperty("Accept", "audio/*,application/octet-stream");
+            connection.setRequestProperty("Accept-Encoding", "identity");
+            if (range != null && range.matches("bytes=\\d*-\\d*")) connection.setRequestProperty("Range", range);
+            int status = connection.getResponseCode();
+            if (status == 401) { session.clearToken(); throw new ApiException("登录已失效，请重新登录", status); }
+            if (status == 403) throw new ApiException("没有权限读取原始音频", status);
+            if (status != 200 && status != 206 && status != 416) {
+                throw new ApiException("读取原始音频失败：HTTP " + status, status);
+            }
+            opened = true;
+            return connection;
+        } finally { if (!opened) connection.disconnect(); }
+    }
+
     public Bitmap downloadCover(String coverId, int size) throws IOException {
         if (coverId == null || coverId.length() == 0) return null;
         IOException failure = null;
@@ -421,6 +595,7 @@ public final class FnApiClient {
     private Bitmap readCover(String coverId, int size) throws IOException {
         HttpURLConnection connection = null;
         InputStream input = null;
+        File image = null;
         boolean consumed = false;
         try {
             connection = openConnection(new URL(coverUrl(coverId, size)), "GET", true);
@@ -432,33 +607,39 @@ public final class FnApiClient {
             long length = contentLength(connection);
             if (length > limit) throw new IOException("封面图片超出大小限制");
             input = connection.getInputStream();
-            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            image = File.createTempFile("cover-", ".image", context.getCacheDir());
+            FileOutputStream bytes = new FileOutputStream(image);
             byte[] buffer = new byte[8192];
-            int count;
-            while ((count = input.read(buffer)) != -1) {
-                if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("封面加载已取消");
-                if (bytes.size() + count > limit) throw new IOException("封面图片超出大小限制");
-                bytes.write(buffer, 0, count);
-            }
-            if (length >= 0 && bytes.size() != length) throw new IOException("封面图片响应提前结束");
+            int count, received = 0;
+            try {
+                while ((count = input.read(buffer)) != -1) {
+                    if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("封面加载已取消");
+                    received += count;
+                    if (received > limit) throw new IOException("封面图片超出大小限制");
+                    bytes.write(buffer, 0, count);
+                }
+            } finally { bytes.close(); }
+            if (length >= 0 && received != length) throw new IOException("封面图片响应提前结束");
             consumed = true;
             // Some platform decoders accept a truncated network stream as a partial image.
             // Validate the complete response before decoding or caching it.
-            byte[] image = bytes.toByteArray();
             BitmapFactory.Options options = new BitmapFactory.Options();
             options.inJustDecodeBounds = true;
-            BitmapFactory.decodeByteArray(image, 0, image.length, options);
+            BitmapFactory.decodeFile(image.getAbsolutePath(), options);
             if (options.outWidth <= 0 || options.outHeight <= 0) throw new IOException("封面图片无效");
             int largest = Math.max(options.outWidth, options.outHeight);
             options.inSampleSize = 1;
-            while (largest / (options.inSampleSize * 2) >= Math.max(32, size)) options.inSampleSize *= 2;
+            int decodeSize = Math.max(32, Math.min(size, Runtime.getRuntime().maxMemory() <= 96L * 1024 * 1024 ? 384 : 1024));
+            while (largest / (options.inSampleSize * 2) >= decodeSize) options.inSampleSize *= 2;
             options.inJustDecodeBounds = false;
-            Bitmap result = BitmapFactory.decodeByteArray(image, 0, image.length, options);
+            options.inPreferredConfig = Bitmap.Config.RGB_565;
+            Bitmap result = BitmapFactory.decodeFile(image.getAbsolutePath(), options);
             if (result == null) throw new IOException("封面图片无法解码");
             return result;
         } finally {
             if (input != null) try { input.close(); } catch (IOException ignored) { }
             if (connection != null && !consumed) connection.disconnect();
+            if (image != null) image.delete();
         }
     }
 
@@ -477,11 +658,7 @@ public final class FnApiClient {
             InputStream input = null;
             FileOutputStream output = null;
             try {
-                connection = openConnection(new URL(streamUrl(guid)), "GET", true);
-                connection.setReadTimeout(60000);
-                connection.setRequestProperty("Accept", "audio/*,application/octet-stream");
-                connection.setRequestProperty("Accept-Encoding", "identity");
-                if (offset > 0L) connection.setRequestProperty("Range", "bytes=" + offset + "-");
+                connection = openTrackStream(guid, offset > 0L ? "bytes=" + offset + "-" : null);
 
                 int status = connection.getResponseCode();
                 if (status == HttpURLConnection.HTTP_UNAUTHORIZED
@@ -585,22 +762,52 @@ public final class FnApiClient {
         }
     }
 
+    private String directLoginBase(String input) throws ApiException {
+        String base = normalizeBaseUrl(input);
+        // A bare DDNS name can front HTTPS on 443 instead of the historical HTTP port.
+        // Probe with an anonymous GET. Only the chosen service receives the login POST.
+        if (!input.matches("[a-zA-Z0-9.-]+") || !input.contains(".") || input.matches("[0-9.]+")
+                || !base.startsWith("http://")) return base;
+        return selectBareDomainRoute(base, "https://" + input);
+    }
+
+    String selectBareDomainRoute(String legacy, String secure) throws ApiException {
+        try {
+            return probeMusicServer(legacy);
+        } catch (ApiException legacyFailure) {
+            try {
+                return probeMusicServer(secure);
+            } catch (ApiException secureFailure) {
+                // Some older music servers have password-login but no config endpoint.
+                if (legacyFailure.getStatusCode() == 404 && secureFailure.getCause() instanceof java.net.ConnectException)
+                    return legacy;
+                throw new ApiException("域名直连失败。HTTP 5666：" + legacyFailure.getMessage()
+                        + "。HTTPS 443：" + secureFailure.getMessage() + "。如使用其他端口，请填写完整地址");
+            }
+        }
+    }
+
     public static String normalizeBaseUrl(String input) throws ApiException {
         String value = input == null ? "" : input.trim();
         if (value.length() == 0) throw new ApiException("请输入 NAS 地址");
-        value = value.replaceAll("(?i)/music/api/v1/?$", "");
-        while (value.endsWith("/")) value = value.substring(0, value.length() - 1);
-
-        boolean hasScheme = value.startsWith("http://") || value.startsWith("https://");
-        if (!hasScheme) {
-            boolean hasPort = value.matches(".*:\\d+$");
-            value = "http://" + value + (hasPort ? "" : ":5666");
+        boolean explicitScheme = value.matches("(?i)^https?://.*");
+        if (!explicitScheme && value.contains("://")) throw new ApiException("NAS 地址请使用 HTTP 或 HTTPS");
+        try {
+            java.net.URI uri = new java.net.URI(explicitScheme ? value : "http://" + value);
+            String host = uri.getHost();
+            if (host == null || uri.getRawUserInfo() != null || uri.getPort() == 0 || uri.getPort() > 65535)
+                throw new ApiException("NAS 地址格式不正确，请检查域名和端口");
+            int port = uri.getPort();
+            String scheme = uri.getScheme().toLowerCase(java.util.Locale.US);
+            if (!explicitScheme) {
+                if (port == 443 || port == 5667 || (port == -1 && !FnRelaySession.directoryReferer(new URL("https://" + host)).isEmpty())) scheme = "https";
+                else if (port == -1) port = 5666;
+            }
+            String path = uri.getRawPath().replaceFirst("/+$", "").replaceFirst("(?i)/music(?:/api/v1)?$", "");
+            return scheme + "://" + host + (port < 0 ? "" : ":" + port) + path;
+        } catch (java.net.URISyntaxException | java.net.MalformedURLException invalid) {
+            throw new ApiException("NAS 地址格式不正确，请检查域名和端口");
         }
-        Uri uri = Uri.parse(value);
-        if (uri.getHost() == null || uri.getHost().length() == 0) {
-            throw new ApiException("NAS 地址格式不正确");
-        }
-        return value;
     }
 
     private Response execute(String baseUrl, String path, String method, String body, boolean auth)
@@ -609,6 +816,20 @@ public final class FnApiClient {
     }
 
     private Response execute(String baseUrl, String path, String method, String body, boolean auth, int timeout)
+            throws Exception {
+        if (auth && !session.isSnapshot()) return snapshot().execute(baseUrl, path, method, body, true, timeout);
+        String base = auth ? currentMusicBase() : baseUrl;
+        try { return executeOnce(base, path, method, body, auth, timeout); }
+        catch (ApiException error) {
+            // Reads may be replayed after a route change; never replay a write with an unknown outcome.
+            if (auth && "GET".equals(method) && error.getCause() instanceof IOException && recoverRoute(base)) {
+                return executeOnce(session.getBaseUrl(), path, method, body, true, timeout);
+            }
+            throw error;
+        }
+    }
+
+    private Response executeOnce(String baseUrl, String path, String method, String body, boolean auth, int timeout)
             throws Exception {
         if (baseUrl == null || baseUrl.length() == 0) throw new ApiException("尚未连接飞牛服务器");
         URL url = new URL(baseUrl + API_PREFIX + path);
@@ -653,6 +874,8 @@ public final class FnApiClient {
                 throw new ApiException("登录接口跳转到其他页面，请填写可直接访问飞牛音乐的地址", status);
             }
             if (status < 200 || status >= 300) {
+                if (!auth && status == 404)
+                    throw new ApiException("地址可访问，但没有找到飞牛音乐登录接口（HTTP 404）。请检查音乐应用和反向代理路径", status);
                 if (status == 404 && "/track/transcode".equals(path))
                     throw new ApiException("NAS 转码接口返回 HTTP 404，请检查音乐服务版本和访问地址的转码接口转发", status);
                 throw new ApiException("服务器返回 HTTP " + status, status);
@@ -661,7 +884,7 @@ public final class FnApiClient {
         } catch (ApiException error) {
             throw error;
         } catch (IOException error) {
-            ApiException failure = new ApiException("无法连接服务器：" + safeMessage(error));
+            ApiException failure = new ApiException("无法连接服务器：" + (auth ? safeMessage(error) : LoginDiagnostics.connectionHint(error, baseUrl)));
             failure.initCause(error);
             throw failure;
         } finally {

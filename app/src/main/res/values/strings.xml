@@ -1,8 +1,8 @@
 <resources>
     <string name="app_name">飞牛车载音乐</string>
     <string name="server_hint">NAS 地址或 FN ID</string>
-    <string name="username_hint">音乐／fnOS 用户名</string>
-    <string name="password_hint">音乐／fnOS 密码</string>
+    <string name="username_hint">飞牛音乐密码登录的用户名</string>
+    <string name="password_hint">该音乐账号的密码</string>
     <string name="login">连接并登录</string>
     <string name="search_hint">搜索歌曲 / 歌手 / 专辑</string>
     <string name="search">搜索</string>

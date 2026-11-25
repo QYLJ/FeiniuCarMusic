@@ -5,4 +5,10 @@
         <item name="android:colorAccent">@color/primary</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
+    <style name="AppTheme.Light" parent="android:style/Theme.Holo.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowBackground">@color/background</item>
+        <item name="android:colorAccent">@color/primary</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
 </resources>

@@ -78,25 +78,35 @@ public final class FnConnectResolver {
     }
 
     private static JSONObject lookup(String fnId) throws ApiException {
+        return lookup(fnId, DIRECTORY_ORIGINS);
+    }
+
+    static JSONObject lookup(String fnId, String[] origins) throws ApiException {
         Exception firstNetworkError = null;
-        Exception lastNetworkError = null;
-        for (String origin : DIRECTORY_ORIGINS) {
+        boolean directoryUnavailable = false;
+        for (String origin : origins) {
             try {
                 return lookupAt(origin, fnId);
             } catch (DirectoryBusinessException error) {
                 if (error.code == 3000006 || error.code == 3000037) {
                     throw new ApiException("FN ID 不存在或尚未开启 FN Connect");
                 }
+                if (error.code == 3000009) {
+                    directoryUnavailable = true;
+                    continue;
+                }
                 throw new ApiException("FN Connect 目录查询失败（错误码 " + error.code
                         + "）：" + error.getMessage());
             } catch (Exception error) {
                 if (firstNetworkError == null) firstNetworkError = error;
-                lastNetworkError = error;
                 Log.w(TAG, "FN Connect directory failed at " + origin, error);
             }
         }
-        Exception usefulError = firstNetworkError == null ? lastNetworkError : firstNetworkError;
-        String detail = usefulError == null ? "unknown" : safeMessage(usefulError);
+        String detail = firstNetworkError == null ? "" : LoginDiagnostics.networkFailure(firstNetworkError);
+        if (directoryUnavailable) {
+            if (!detail.isEmpty()) detail += "。";
+            detail += "目录服务暂时不可用（3000009），请稍后重试或填写 NAS 直连地址";
+        }
         throw new ApiException("无法访问 FN Connect 服务：" + detail);
     }
 
@@ -242,12 +252,6 @@ public final class FnConnectResolver {
         while ((count = reader.read(buffer)) != -1) result.append(buffer, 0, count);
         reader.close();
         return result.toString();
-    }
-
-    private static String safeMessage(Throwable error) {
-        String message = error.getMessage();
-        return message == null || message.length() == 0
-                ? error.getClass().getSimpleName() : message;
     }
 
     private static final class DirectoryBusinessException extends Exception {

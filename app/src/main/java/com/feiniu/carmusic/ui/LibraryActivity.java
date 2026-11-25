@@ -49,7 +49,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-public final class LibraryActivity extends Activity {
+public final class LibraryActivity extends ThemeActivity {
     private static final int[] NAV_IDS = {R.id.nav_home, R.id.nav_favorites, R.id.nav_recent, R.id.nav_albums,
             R.id.nav_artists, R.id.nav_genres, R.id.nav_library, R.id.nav_playlists};
     private static final int PAGE_SIZE = 500;
@@ -123,11 +123,18 @@ public final class LibraryActivity extends Activity {
         }
     };
 
+    static final String EXTRA_LAUNCH_PLAY = "play_on_launcher_entry";
+    private boolean launchPlayPending;
+
     private final ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
             playback = ((PlaybackService.LocalBinder) service).getService();
             bound = true;
+            if (launchPlayPending) {
+                launchPlayPending = false;
+                if (pendingPlayIndex < 0) playback.playOnLaunch();
+            }
             if (pendingPlayIndex >= 0) {
                 int index = pendingPlayIndex;
                 pendingPlayIndex = -1;
@@ -146,6 +153,7 @@ public final class LibraryActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        launchPlayPending = savedInstanceState == null && getIntent().getBooleanExtra(EXTRA_LAUNCH_PLAY, false);
         setContentView(R.layout.activity_library);
         api = FnApiClient.get(this);
         historyStore = new HistoryStore(this);
@@ -675,13 +683,14 @@ public final class LibraryActivity extends Activity {
 
     private void toggleFavorite(final Track track) {
         final boolean wanted = !track.favorite;
+        final FnApiClient requestApi = api.snapshot();
         track.favorite = wanted;
         trackAdapter.notifyDataSetChanged();
         Toast.makeText(this, wanted ? "已收藏" : "已取消收藏", Toast.LENGTH_SHORT).show();
         executor.execute(new Runnable() {
             @Override public void run() {
                 try {
-                    api.setFavorite(track.guid, wanted);
+                    requestApi.setFavorite(track.guid, wanted);
                 } catch (final Exception error) {
                     main.post(new Runnable() {
                         @Override public void run() {

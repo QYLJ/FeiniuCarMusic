@@ -30,13 +30,59 @@ public class AudioFocusHandlingTest {
     private AudioManager audio;
     @Before public void setUp() {
         RuntimeEnvironment.getApplication().getSharedPreferences("playback_queue", 0).edit().clear().commit();
-        RuntimeEnvironment.getApplication().getSharedPreferences("playback_settings", 0).edit().clear().commit();
+        RuntimeEnvironment.getApplication().getSharedPreferences("playback_settings", 0).edit().clear()
+                .putBoolean("pause_for_navigation", false).commit();
         controller = Robolectric.buildService(PlaybackService.class).create(); service = controller.get();
         audio = (AudioManager) service.getSystemService(Context.AUDIO_SERVICE);
         Track track = new Track(); track.guid = "focus-only"; track.accessStatus = 3;
         service.setQueueAndPlay(Collections.singletonList(track), 0);
     }
+    @Test public void launcherHonorsPreferenceAndWaitsForNavigation() throws Exception {
+        MediaPlayer player = startPreparedPlayer();
+        service.pause();
+        service.playOnLaunch();
+        assertFalse(player.isPlaying());
+        new com.feiniu.carmusic.data.PlaybackPreferences(service).setAutoPlayOnLaunch(true);
+        service.playOnLaunch();
+        assertTrue(player.isPlaying());
+        service.onAudioFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT);
+        service.playOnLaunch();
+        assertFalse(player.isPlaying());
+    }
     @After public void tearDown() { controller.destroy(); }
+    @Test public void navigationPriorityPausesForEveryDuckThenResumesWithoutStealingFocus() throws Exception {
+        new com.feiniu.carmusic.data.PlaybackPreferences(service).setPauseForNavigation(true);
+        MediaPlayer player = startPreparedPlayer();
+        service.onAudioFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK);
+        service.onAudioFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK);
+        assertFalse(player.isPlaying());
+        assertTrue(field("resumeOnFocusGain").getBoolean(service));
+        shadowOf(audio).setNextFocusRequestResponse(AudioManager.AUDIOFOCUS_REQUEST_FAILED);
+        assertFalse(request());
+        service.onAudioFocusChange(AudioManager.AUDIOFOCUS_GAIN);
+        assertTrue(player.isPlaying());
+        assertEquals(1f, shadowOf(player).getLeftVolume(), .001f);
+    }
+    @Test public void manualPauseDuringNavigationPriorityNeverRestartsOnGain() throws Exception {
+        new com.feiniu.carmusic.data.PlaybackPreferences(service).setPauseForNavigation(true);
+        MediaPlayer player = startPreparedPlayer();
+        service.onAudioFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK);
+        service.pause();
+        service.onAudioFocusChange(AudioManager.AUDIOFOCUS_GAIN);
+        assertFalse(player.isPlaying());
+        assertFalse(service.getSharedPreferences("playback_settings", 0).getBoolean("restart_playing", true));
+    }
+    @Test public void systemServiceRestartResumesOnlyPreviouslyActiveMusic() throws Exception {
+        MediaPlayer player = startPreparedPlayer();
+        service.pause();
+        field("restartPending").setBoolean(service, true);
+        assertEquals(android.app.Service.START_STICKY, service.onStartCommand(null, 0, 1));
+        assertTrue(player.isPlaying());
+        assertTrue(service.getSharedPreferences("playback_settings", 0).getBoolean("restart_playing", false));
+        service.pause();
+        assertEquals(android.app.Service.START_NOT_STICKY, service.onStartCommand(null, 0, 2));
+        assertFalse(player.isPlaying());
+    }
     @Test public void synchronousFocusGrantRestoresDuckedVolume() throws Exception {
         MediaPlayer player = (MediaPlayer) field("player").get(service);
         service.onAudioFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK);
@@ -94,6 +140,7 @@ public class AudioFocusHandlingTest {
         assertEquals(.25f, shadowOf(player).getLeftVolume(), .001f);
         service.onPrepared(player);
         assertTrue(player.isPlaying());
+        shadowOf(android.os.Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(500));
         assertEquals(.25f, shadowOf(player).getLeftVolume(), .001f);
         service.onAudioFocusChange(AudioManager.AUDIOFOCUS_GAIN);
         assertEquals(1f, shadowOf(player).getLeftVolume(), .001f);

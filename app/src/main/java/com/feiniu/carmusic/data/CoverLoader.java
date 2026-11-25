@@ -9,18 +9,25 @@ import android.widget.ImageView;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.lang.ref.WeakReference;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 public final class CoverLoader {
     private static volatile CoverLoader instance;
 
     private final FnApiClient api;
-    private final LruCache<String, Bitmap> cache = new LruCache<String, Bitmap>(8 * 1024) {
+    private final LruCache<String, Bitmap> cache = new LruCache<String, Bitmap>((int)
+            Math.max(256L, Math.min(8 * 1024L, Runtime.getRuntime().maxMemory() / 1024L / 32L))) {
         @Override
         protected int sizeOf(String key, Bitmap value) {
-            return value.getRowBytes() * value.getHeight() / 1024;
+            return Math.max(1, value.getRowBytes() * value.getHeight() / 1024);
         }
     };
-    private final ExecutorService executor = Executors.newFixedThreadPool(2);
+    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final Map<String, List<WeakReference<ImageView>>> pending = new HashMap<String, List<WeakReference<ImageView>>>();
     private final Handler main = new Handler(Looper.getMainLooper());
 
     private CoverLoader(Context context) {
@@ -54,23 +61,60 @@ public final class CoverLoader {
             setBitmap(key, targets, existing);
             return;
         }
+        final List<WeakReference<ImageView>> requestTargets;
+        synchronized (pending) {
+            List<WeakReference<ImageView>> waiting = pending.get(key);
+            boolean alreadyQueued = waiting != null;
+            if (!alreadyQueued) {
+                if (pending.size() >= 64) return;
+                waiting = new ArrayList<WeakReference<ImageView>>();
+                pending.put(key, waiting);
+            }
+            for (ImageView target : targets) if (target != null) waiting.add(new WeakReference<ImageView>(target));
+            if (alreadyQueued) return;
+            requestTargets = waiting;
+        }
         executor.execute(new Runnable() {
             @Override
             public void run() {
                 try {
+                    synchronized (pending) {
+                        List<WeakReference<ImageView>> waiting = pending.get(key);
+                        boolean needed = false;
+                        if (waiting != null) for (WeakReference<ImageView> ref : waiting) {
+                            ImageView view = ref.get();
+                            if (view != null && key.equals(view.getTag())) { needed = true; break; }
+                        }
+                        if (!needed) return;
+                    }
                     final Bitmap bitmap = api.downloadCover(coverId, size);
                     if (bitmap == null) return;
                     cache.put(key, bitmap);
+                    final List<WeakReference<ImageView>> waiting;
+                    synchronized (pending) { waiting = pending.remove(key); }
                     main.post(new Runnable() {
                         @Override
                         public void run() {
-                            setBitmap(key, targets, bitmap);
+                            if (waiting != null) for (WeakReference<ImageView> ref : waiting) {
+                                ImageView view = ref.get();
+                                if (view != null) setBitmap(key, new ImageView[] {view}, bitmap);
+                            }
                         }
                     });
                 } catch (Exception ignored) {
+                } catch (OutOfMemoryError exhausted) {
+                    cache.evictAll();
+                } finally {
+                    synchronized (pending) { if (pending.get(key) == requestTargets) pending.remove(key); }
                 }
             }
         });
+    }
+
+    public static void trimMemory(int level) {
+        CoverLoader loader = instance;
+        if (loader == null) return;
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) loader.cache.evictAll();
     }
 
     private static void setBitmap(String coverId, ImageView[] targets, Bitmap bitmap) {

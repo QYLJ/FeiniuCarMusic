@@ -80,11 +80,17 @@ public final class TlsCompat {
     public static synchronized void initialize() {
         if (initialized) return;
         initialized = true;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) return;
+        if (Build.VERSION.SDK_INT >= 24) return;
         try {
-            Provider provider = Conscrypt.newProvider();
-            Security.insertProviderAt(provider, 1);
-            SSLContext context = SSLContext.getInstance("TLS", provider);
+            SSLContext context;
+            if (Build.VERSION.SDK_INT < 21) {
+                Provider provider = Conscrypt.newProvider();
+                Security.insertProviderAt(provider, 1);
+                context = SSLContext.getInstance("TLS", provider);
+            } else {
+                // Android 5/6 already speak TLS 1.2, but some car ROMs lack current CA roots.
+                context = SSLContext.getInstance("TLS");
+            }
             context.init(null, new TrustManager[]{createCompositeTrustManager()}, null);
             legacyFactory = context.getSocketFactory();
         } catch (Throwable error) {
@@ -93,9 +99,10 @@ public final class TlsCompat {
     }
 
     public static void configure(HttpURLConnection connection) throws IOException {
-        if (!(connection instanceof HttpsURLConnection) || Build.VERSION.SDK_INT >= 21) return;
+        if (!(connection instanceof HttpsURLConnection) || Build.VERSION.SDK_INT >= 24) return;
         initialize();
         if (legacyFactory == null) {
+            if (Build.VERSION.SDK_INT >= 21) return; // Retain the platform's verified HTTPS on unusual ROMs.
             String detail = initializationError == null ? "unknown"
                     : initializationError.getClass().getSimpleName();
             throw new IOException("Android 4 TLS 初始化失败：" + detail);

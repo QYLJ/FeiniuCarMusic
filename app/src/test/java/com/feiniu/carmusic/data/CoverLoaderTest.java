@@ -102,6 +102,36 @@ public class CoverLoaderTest {
         assertEquals(1, server.getRequestCount());
     }
 
+    @Test public void simultaneousViewsShareOneRequestAndMemoryTrimDropsCachedBitmaps() throws Exception {
+        server.enqueue(image(72, Color.BLUE).setBodyDelay(150, TimeUnit.MILLISECONDS));
+        ImageView first = new ImageView(context), second = new ImageView(context);
+        loader.load("shared", 720, first);
+        loader.load("shared", 720, second);
+        awaitSize(first, 72); awaitSize(second, 72);
+        assertSame(bitmap(first), bitmap(second));
+        assertEquals(1, server.getRequestCount());
+        Field singleton = CoverLoader.class.getDeclaredField("instance"); singleton.setAccessible(true);
+        singleton.set(null, loader);
+        try {
+            CoverLoader.trimMemory(80);
+            server.enqueue(image(72, Color.RED));
+            ImageView afterTrim = new ImageView(context);
+            loader.load("shared", 720, afterTrim);
+            awaitSize(afterTrim, 72);
+            assertEquals(2, server.getRequestCount());
+        } finally { singleton.set(null, null); }
+    }
+
+    @Test public void largeEncodedResponseUsesTemporaryFileAndRemovesItAfterDecode() throws Exception {
+        MockResponse response = image(72, Color.BLUE);
+        Buffer body = response.getBody();
+        body.write(new byte[7 * 1024 * 1024]);
+        server.enqueue(response.setBody(body));
+        assertNotNull(FnApiClient.get(context).downloadCover("padded-large-cover", 720));
+        java.io.File[] leftovers = context.getCacheDir().listFiles((dir, name) -> name.startsWith("cover-") && name.endsWith(".image"));
+        assertNotNull(leftovers); assertEquals(0, leftovers.length);
+    }
+
     private MockResponse image(int size, int color) {
         Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
         bitmap.eraseColor(color);

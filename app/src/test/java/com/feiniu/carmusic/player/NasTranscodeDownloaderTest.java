@@ -59,6 +59,24 @@ public class NasTranscodeDownloaderTest {
         }
     }
 
+    @Test public void newerNasOpusResponseIsStreamedAndCachedUsingActualCodec() throws Exception {
+        enqueueSession("opus");
+        Track track = new Track(); track.guid = "nas-overrides-with-opus";
+        final ProgressiveAudioFile[] stream = {null};
+        AudioFile audio = new TrackFileCache(context).getOrDownload(track, "mp3", 192, ready -> {
+            stream[0] = ready;
+            assertEquals("opus", ready.audio.codec);
+            byte[] magic = new byte[4]; assertEquals(4, ready.readAt(0, magic, 0, 4));
+            assertArrayEquals(new byte[] {'O','g','g','S'}, magic);
+        });
+        try {
+            assertEquals("opus", audio.codec); assertEquals(48000, audio.sampleRate);
+            assertTrue(stream[0].isComplete());
+            assertEquals("opus", new TrackFileCache(context).getOrDownload(track, "mp3").codec);
+            assertTrue(new File(audio.file.getPath() + ".complete").isFile());
+        } finally { if (stream[0] != null) stream[0].close(); }
+    }
+
     @Test public void earlyAudioIsReadableBeforeRemainingSegmentsAndCacheMarkerWaitsUntilComplete() throws Exception {
         enqueueSession("mp3", true);
         Track track = new Track(); track.guid = "early-stream";

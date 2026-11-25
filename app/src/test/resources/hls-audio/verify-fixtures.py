@@ -22,7 +22,7 @@ import com.feiniu.carmusic.player.HlsAudioAssembler;
 public class VerifyAssembler {
  public static void main(String[] args) throws Exception {
   File root = new File(args[0]);
-  for (String codec : new String[]{"flac", "mp3", "aac"}) {
+  for (String codec : new String[]{"flac", "mp3", "aac", "opus"}) {
    File result = new File(args[1], codec + "." + codec);
    try (HlsAudioAssembler a = new HlsAudioAssembler(result, codec)) {
     a.acceptInitialization(Files.readAllBytes(new File(root, codec + "-init.mp4").toPath()));
@@ -44,7 +44,8 @@ with tempfile.TemporaryDirectory(prefix="feiniu-hls-verify-") as temporary:
     output = Path(temporary)
     harness = output / "VerifyAssembler.java"
     harness.write_text(HARNESS, encoding="utf-8")
-    subprocess.run(["javac", "-encoding", "UTF-8", "-d", str(output), str(SOURCE), str(harness)], check=True)
+    subprocess.run(["javac", "-encoding", "UTF-8", "-d", str(output), str(SOURCE),
+                    str(SOURCE.with_name("OggOpusWriter.java")), str(harness)], check=True)
     subprocess.run(["java", "-cp", str(output), "VerifyAssembler", str(FIXTURES), str(output)], check=True)
     for codec, (samples, pcm_hash) in EXPECTED_PCM.items():
         audio = output / f"{codec}.{codec}"
@@ -63,3 +64,14 @@ with tempfile.TemporaryDirectory(prefix="feiniu-hls-verify-") as temporary:
         duration = float(probe["format"]["duration"])
         assert abs(duration - samples / 44100.0) < 0.001
         print(f"{codec}: {samples} nonzero PCM sample frames, {duration:.6f} s, reference PCM identical")
+    # Independently remux the exact same MP4 packets with FFmpeg, then compare decoded PCM.
+    opus_mp4 = output / "reference-opus.mp4"
+    opus_mp4.write_bytes((FIXTURES / "opus-init.mp4").read_bytes() + b"".join(
+        (FIXTURES / f"opus-{i}.m4s").read_bytes() for i in range(5)))
+    reference_opus = output / "reference.opus"
+    subprocess.run(["ffmpeg", "-v", "error", "-i", str(opus_mp4), "-c:a", "copy", str(reference_opus)], check=True)
+    opus_pcm = decode(output / "opus.opus")
+    reference_pcm = decode(reference_opus)
+    assert opus_pcm == reference_pcm, f"Opus PCM differs: {len(opus_pcm)//4} vs {len(reference_pcm)//4} sample frames"
+    assert any(opus_pcm)
+    print(f"opus: {len(opus_pcm)//4} nonzero PCM sample frames, FFmpeg reference PCM identical")

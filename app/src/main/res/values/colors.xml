@@ -1,18 +1,41 @@
 <resources>
-    <color name="background">#121118</color>
-    <color name="background_top">#201D29</color>
-    <color name="sidebar">#18161F</color>
-    <color name="surface">#22202B</color>
-    <color name="surface_pressed">#39323F</color>
-    <color name="surface_high">#2B2733</color>
-    <color name="primary">#FF4566</color>
-    <color name="primary_dark">#D93455</color>
-    <color name="primary_soft">#412733</color>
-    <color name="text_primary">#FAF9FC</color>
-    <color name="text_secondary">#B5AFBF</color>
-    <color name="text_muted">#9891A4</color>
-    <color name="nav_icon">#A69EAF</color>
-    <color name="nav_text_default">#D6D2DC</color>
-    <color name="divider">#36303F</color>
-    <color name="error">#FF738E</color>
+    <color name="on_accent">#FFFFFF</color>
+    <color name="background">#F4F5F8</color><color name="background_top">#FFFFFF</color>
+    <color name="sidebar">#ECEEF3</color><color name="surface">#FFFFFF</color>
+    <color name="surface_pressed">#E2E5ED</color><color name="surface_high">#E8EBF2</color>
+    <color name="primary">#C7294B</color><color name="primary_dark">#A51E3C</color>
+    <color name="primary_soft">#F9DFE6</color><color name="text_primary">#1E2433</color>
+    <color name="text_secondary">#4D576A</color><color name="text_muted">#687287</color>
+    <color name="nav_icon">#596477</color><color name="nav_text_default">#323D50</color>
+    <color name="divider">#D3D8E2</color><color name="error">#B71F3D</color>
+<color name="cover_end">#C9D3E4</color>
+<color name="library_end">#C9D1EB</color>
+<color name="floating_end">#DDF4F5F8</color>
+<color name="control_stroke">#559AA3B3</color>
+<color name="player_header">#E6FFFFFF</color>
+<color name="floating_stroke">#33A4ACBA</color>
+<color name="lyrics_stroke">#33A4ACBA</color>
+<color name="favorite_start">#F3DDEC</color>
+<color name="favorite_stroke">#558E6580</color>
+<color name="lyrics_stage">#DDF8F9FC</color>
+<color name="library_stroke">#55808BA6</color>
+<color name="library_start">#DEE2F5</color>
+<color name="roam_stroke">#55C37C91</color>
+<color name="scrim_bottom">#F2F4F5F8</color>
+<color name="floating_start">#F2FFFFFF</color>
+<color name="cover_start">#DDE3EF</color>
+<color name="roam_end">#EDB9C7</color>
+<color name="roam_start">#F6D8DF</color>
+<color name="recent_end">#BCDFD3</color>
+<color name="player_bar">#F2F5F6FA</color>
+<color name="control_dock">#E6FFFFFF</color>
+<color name="recent_start">#D8ECE6</color>
+<color name="scrim_clear">#88F4F5F8</color>
+<color name="scrim_start">#DDF4F5F8</color>
+<color name="scrim_center">#CCF4F5F8</color>
+<color name="recent_stroke">#55749C8D</color>
+<color name="favorite_end">#E6C5D9</color>
+<color name="scrim_end">#EEF4F5F8</color>
+<color name="floating_center">#E6F4F5F8</color>
+<color name="scrim_top">#AAF4F5F8</color>
 </resources>

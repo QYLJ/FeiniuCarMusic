@@ -13,24 +13,34 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.LinearLayout;
+import android.widget.CheckBox;
+import android.app.AlertDialog;
+import android.content.DialogInterface;
+import android.widget.Toast;
 
 import com.feiniu.carmusic.R;
 import com.feiniu.carmusic.data.FnApiClient;
 import com.feiniu.carmusic.data.FnConnectResolver;
 import com.feiniu.carmusic.data.SessionStore;
+import com.feiniu.carmusic.data.AccountStore;
+import com.feiniu.carmusic.player.PlaybackService;
 import com.feiniu.carmusic.diagnostics.AppLog;
 import com.feiniu.carmusic.update.AppUpdater;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-public final class LoginActivity extends Activity {
+public final class LoginActivity extends ThemeActivity {
     private EditText serverInput;
     private EditText usernameInput;
     private EditText passwordInput;
     private TextView statusText;
     private Button loginButton;
     private FnApiClient api;
+    private AccountStore accounts;
+    private CheckBox remember;
+    private LinearLayout savedAccounts;
+    private boolean busy;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private volatile boolean destroyed;
@@ -40,6 +50,7 @@ public final class LoginActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_login);
         api = FnApiClient.get(this);
+        accounts = new AccountStore(this);
         SessionStore session = api.session();
 
         serverInput = (EditText) findViewById(R.id.server_input);
@@ -47,6 +58,8 @@ public final class LoginActivity extends Activity {
         passwordInput = (EditText) findViewById(R.id.password_input);
         statusText = (TextView) findViewById(R.id.status_text);
         loginButton = (Button) findViewById(R.id.login_button);
+        remember = (CheckBox) findViewById(R.id.remember_account);
+        savedAccounts = (LinearLayout) findViewById(R.id.saved_accounts);
 
         final View root = findViewById(R.id.login_root);
         root.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
@@ -96,7 +109,8 @@ public final class LoginActivity extends Activity {
             }
         });
 
-        if (session.hasSession()) openLibrary();
+        if (session.hasSession() && !getIntent().getBooleanExtra("manage_accounts", false)) openLibrary();
+        else refreshAccounts();
     }
 
     @Override
@@ -127,6 +141,13 @@ public final class LoginActivity extends Activity {
             return;
         }
 
+        login(server, username, password, remember.isChecked());
+    }
+
+    private void login(final String server, final String username, final String password, final boolean save) {
+        if (busy || destroyed) return;
+        busy = true;
+
         hideKeyboard();
         AppLog.info("login.started", FnConnectResolver.looksLikeFnIdInput(server) ? "route=fn_connect" : "route=direct");
         loginButton.setEnabled(false);
@@ -136,15 +157,24 @@ public final class LoginActivity extends Activity {
             @Override
             public void run() {
                 try {
-                    api.login(server, username, password);
+                    final FnApiClient.LoginResult result = api.authenticate(server, username, password);
+                    if (destroyed) return;
+                    boolean stored = true;
+                    if (save) try { accounts.save(result.loginAddress, result.username, password); }
+                    catch (Exception unavailable) { stored = false; }
+                    final boolean saved = stored;
                     AppLog.info("login.succeeded", "music session established");
                     main.post(new Runnable() {
                         @Override
                         public void run() {
                             if (destroyed) return;
+                            PlaybackService.resetForAccountSwitch(LoginActivity.this);
+                            api.session().saveLogin(result.baseUrl, result.token, result.username, result.loginAddress);
+                            busy = false;
                             passwordInput.setText("");
                             loginButton.setEnabled(true);
                             showStatus("连接成功", false);
+                            if (!saved) Toast.makeText(LoginActivity.this, "登录成功，但本机账户加密保存暂不可用", Toast.LENGTH_LONG).show();
                             openLibrary();
                         }
                     });
@@ -154,6 +184,7 @@ public final class LoginActivity extends Activity {
                         @Override
                         public void run() {
                             if (destroyed) return;
+                            busy = false;
                             loginButton.setEnabled(true);
                             showStatus(error.getMessage() == null ? "登录失败" : error.getMessage(), true);
                         }
@@ -161,6 +192,107 @@ public final class LoginActivity extends Activity {
                 }
             }
         });
+    }
+
+    private void refreshAccounts() {
+        if (destroyed) return;
+        executor.execute(new Runnable() {
+            @Override public void run() {
+                try {
+                    final java.util.List<AccountStore.Account> saved = accounts.list();
+                    main.post(new Runnable() {
+                        @Override public void run() {
+                            if (destroyed) return;
+                            savedAccounts.removeAllViews();
+                            TextView title = new TextView(LoginActivity.this);
+                            title.setText(saved.isEmpty() ? "登录后可保存账户，下次点击即可切换" : "已保存账户 · 点击快速切换");
+                            title.setTextColor(getResources().getColor(com.feiniu.carmusic.R.color.text_secondary));
+                            UiAppearance.textSize(title, 13);
+                            savedAccounts.addView(title);
+                            for (final AccountStore.Account account : saved) addAccountRow(account);
+                            Button add = new Button(LoginActivity.this);
+                            add.setText("添加账户"); add.setTag("add_account");
+                            add.setOnClickListener(new View.OnClickListener() {
+                                @Override public void onClick(View view) {
+                                    if (busy) return;
+                                    usernameInput.setText(""); passwordInput.setText("");
+                                    remember.setChecked(true); usernameInput.requestFocus();
+                                    showStatus("填写账户并登录，成功后保存到本机", false);
+                                }
+                            });
+                            savedAccounts.addView(add);
+                            UiAppearance.apply(savedAccounts);
+                        }
+                    });
+                } catch (Exception unavailable) {
+                    main.post(new Runnable() {
+                        @Override public void run() {
+                            if (destroyed) return;
+                            savedAccounts.removeAllViews();
+                            Button reset = new Button(LoginActivity.this);
+                            reset.setText("已保存账户不可用 · 点击清除后重新添加");
+                            reset.setOnClickListener(new View.OnClickListener() {
+                                @Override public void onClick(View view) {
+                                    AudioSettingsDialogs.show(new AlertDialog.Builder(LoginActivity.this).setTitle("清除已保存账户")
+                                            .setMessage("删除本机保存的账号密码，之后需要重新添加。")
+                                            .setPositiveButton("清除", new DialogInterface.OnClickListener() {
+                                                @Override public void onClick(DialogInterface dialog, int which) { accounts.clear(); refreshAccounts(); }
+                                            }).setNegativeButton("取消", null));
+                                }
+                            });
+                            savedAccounts.addView(reset);
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    private void addAccountRow(final AccountStore.Account account) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        Button select = new Button(this);
+        select.setText(account.username + "\n" + account.server);
+        select.setTag("account_" + account.id);
+        select.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) {
+                if (busy) return;
+                if (api.session().hasSession() && account.username.equals(api.session().getUsername())
+                        && account.server.equals(api.session().getLoginAddress())) { openLibrary(); return; }
+                login(account.server, account.username, account.password(), true);
+            }
+        });
+        row.addView(select, new LinearLayout.LayoutParams(0, -2, 1));
+        Button delete = new Button(this); delete.setText("删除"); delete.setContentDescription("删除保存账户 " + account.username);
+        delete.setTag("delete_account_" + account.id);
+        delete.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) {
+                if (busy) return;
+                AudioSettingsDialogs.show(new AlertDialog.Builder(LoginActivity.this).setTitle("删除保存账户")
+                        .setMessage("删除本机保存的 " + account.username + " 的账号密码，不影响 NAS 上的账户。")
+                        .setPositiveButton("删除", new DialogInterface.OnClickListener() {
+                            @Override public void onClick(DialogInterface dialog, int which) {
+                                if (destroyed || busy) return;
+                                executor.execute(new Runnable() {
+                                    @Override public void run() {
+                                        try { accounts.delete(account.id); }
+                                        catch (Exception failed) {
+                                            main.post(new Runnable() {
+                                                @Override public void run() {
+                                                    if (!destroyed) showStatus("删除失败，请重试或清除已保存账户后重新添加", true);
+                                                }
+                                            });
+                                            return;
+                                        }
+                                        main.post(new Runnable() { @Override public void run() { if (!destroyed) refreshAccounts(); } });
+                                    }
+                                });
+                            }
+                        }).setNegativeButton("取消", null));
+            }
+        });
+        row.addView(delete, new LinearLayout.LayoutParams(-2, -2));
+        savedAccounts.addView(row);
     }
 
     private void showStatus(String text, boolean error) {
@@ -179,6 +311,10 @@ public final class LoginActivity extends Activity {
 
     private void openLibrary() {
         Intent intent = new Intent(this, LibraryActivity.class);
+        boolean launcher = Intent.ACTION_MAIN.equals(getIntent().getAction())
+                && getIntent().hasCategory(Intent.CATEGORY_LAUNCHER);
+        intent.putExtra(LibraryActivity.EXTRA_LAUNCH_PLAY, launcher && !getIntent().getBooleanExtra("manage_accounts", false));
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
         startActivity(intent);
         finish();
     }
@@ -186,6 +322,7 @@ public final class LoginActivity extends Activity {
     @Override
     protected void onDestroy() {
         destroyed = true;
+        main.removeCallbacksAndMessages(null);
         executor.shutdownNow();
         super.onDestroy();
     }

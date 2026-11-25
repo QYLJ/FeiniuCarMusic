@@ -35,10 +35,11 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-public final class PlayerActivity extends Activity {
+public final class PlayerActivity extends ThemeActivity {
     private static final Pattern LRC_TIME = Pattern.compile("\\[(\\d{1,2}):(\\d{2})(?:[.:](\\d{1,3}))?\\]");
 
     private final Handler handler = new Handler();
@@ -46,6 +47,9 @@ public final class PlayerActivity extends Activity {
     private final List<TimedLyricLine> lyricLines = new ArrayList<TimedLyricLine>();
     private PlaybackService playback;
     private boolean bound;
+    private boolean binding;
+    private boolean started;
+    private boolean destroyed;
     private boolean trackingSeek;
     private String displayedGuid = "";
     private int lyricGeneration;
@@ -82,6 +86,7 @@ public final class PlayerActivity extends Activity {
 
     private final Runnable update = new Runnable() {
         @Override public void run() {
+            if (!started || destroyed) return;
             updateUi();
             handler.postDelayed(this, 300L);
         }
@@ -89,6 +94,7 @@ public final class PlayerActivity extends Activity {
 
     private final ServiceConnection connection = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name, IBinder service) {
+            if (!started || destroyed) return;
             playback = ((PlaybackService.LocalBinder) service).getService();
             bound = true;
             updateUi();
@@ -225,18 +231,21 @@ public final class PlayerActivity extends Activity {
 
     @Override protected void onStart() {
         super.onStart();
-        bindService(new Intent(this, PlaybackService.class), connection, Context.BIND_AUTO_CREATE);
+        started = true;
+        binding = bindService(new Intent(this, PlaybackService.class), connection, Context.BIND_AUTO_CREATE);
         handler.removeCallbacks(update);
         handler.post(update);
     }
 
     @Override protected void onStop() {
+        started = false;
         handler.removeCallbacks(update);
-        if (bound) {
+        if (binding) {
             unbindService(connection);
-            bound = false;
-            playback = null;
+            binding = false;
         }
+        bound = false;
+        playback = null;
         super.onStop();
     }
 
@@ -259,7 +268,11 @@ public final class PlayerActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        destroyed = true;
+        started = false;
         lyricGeneration++;
+        handler.removeCallbacksAndMessages(null);
+        playback = null;
         executor.shutdownNow();
         super.onDestroy();
     }
@@ -270,7 +283,7 @@ public final class PlayerActivity extends Activity {
     }
 
     private void updateUi() {
-        if (playback == null) return;
+        if (destroyed || playback == null) return;
         PlaybackService.PlaybackState state = playback.snapshot();
         Track track = state.track;
         if (track == null) {
@@ -322,17 +335,19 @@ public final class PlayerActivity extends Activity {
     }
 
     private void loadLyrics(final String guid) {
+        if (destroyed) return;
+        final FnApiClient requestApi = FnApiClient.get(this).snapshot();
         final int generation = ++lyricGeneration;
         lyricLines.clear();
         lyricView.setError("正在获取歌词…");
-        executor.execute(new Runnable() {
+        executeTask(new Runnable() {
             @Override public void run() {
                 try {
                     final List<TimedLyricLine> parsed = parseLrc(
-                            FnApiClient.get(PlayerActivity.this).getLyric(guid));
+                            requestApi.getLyric(guid));
                     handler.post(new Runnable() {
                         @Override public void run() {
-                            if (generation != lyricGeneration || !guid.equals(displayedGuid)) return;
+                            if (destroyed || generation != lyricGeneration || !guid.equals(displayedGuid)) return;
                             lyricLines.clear();
                             lyricLines.addAll(parsed);
                             lyricView.setLines(lyricLines);
@@ -345,7 +360,7 @@ public final class PlayerActivity extends Activity {
                 } catch (Exception error) {
                     handler.post(new Runnable() {
                         @Override public void run() {
-                            if (generation == lyricGeneration) lyricView.setError("暂无歌词");
+                            if (!destroyed && generation == lyricGeneration) lyricView.setError("暂无歌词");
                         }
                     });
                 }
@@ -444,20 +459,22 @@ public final class PlayerActivity extends Activity {
     }
 
     private void toggleCurrentFavorite() {
-        if (playback == null) return;
+        if (destroyed || playback == null) return;
         final Track track = playback.snapshot().track;
         if (track == null) return;
         final boolean wanted = !track.favorite;
+        final FnApiClient requestApi = FnApiClient.get(this).snapshot();
         track.favorite = wanted;
         favorite.setActive(wanted);
         Toast.makeText(this, wanted ? "已收藏" : "已取消收藏", Toast.LENGTH_SHORT).show();
-        executor.execute(new Runnable() {
+        executeTask(new Runnable() {
             @Override public void run() {
                 try {
-                    FnApiClient.get(PlayerActivity.this).setFavorite(track.guid, wanted);
+                    requestApi.setFavorite(track.guid, wanted);
                 } catch (final Exception error) {
                     handler.post(new Runnable() {
                         @Override public void run() {
+                            if (destroyed) return;
                             track.favorite = !wanted;
                             favorite.setActive(track.favorite);
                             Toast.makeText(PlayerActivity.this, "操作失败", Toast.LENGTH_SHORT).show();
@@ -466,6 +483,12 @@ public final class PlayerActivity extends Activity {
                 }
             }
         });
+    }
+
+    private void executeTask(Runnable task) {
+        if (destroyed || executor.isShutdown()) return;
+        try { executor.execute(task); }
+        catch (RejectedExecutionException ignored) { /* Activity destruction won the submission race. */ }
     }
 
     private void showQueue() {
